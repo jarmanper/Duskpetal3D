@@ -1,0 +1,4371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Duskpetal 3D</title>
+<meta name="description" content="Bloom the beacons. Kill the Boss Bloom. Sixty seconds before the light fades.">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:#0D0B16;
+    color:#8BE8A1;
+    font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing:antialiased;
+    touch-action:none;
+  }
+  #wrap { position:fixed; inset:0; }
+  canvas { position:absolute; inset:0; display:block; width:100%; height:100%; }
+  canvas#scene { z-index:1; }
+  canvas#hud   { z-index:2; pointer-events:none; }
+  #wrap.locked { cursor:none; }
+  #nogl, #rot {
+    position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background:#0D0B16; color:#8BE8A1; text-align:center; padding:24px; font-size:15px;
+    letter-spacing:.06em; line-height:1.7; z-index:20;
+  }
+  @media (max-width: 900px) { #rot { display:flex; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="scene"></canvas>
+  <canvas id="hud"></canvas>
+</div>
+<div id="nogl">This build needs WebGL 2.<br>Try a current Chrome, Edge, Firefox or Safari &mdash;<br>or use the isometric build, duskpetal.html.</div>
+<div id="rot">DUSKPETAL 3D needs a keyboard and mouse.<br>Open it on a laptop or desktop.</div>
+<script>
+"use strict";
+/* ============================================================================
+   DUSKPETAL
+   A 60-second reverse-siege: bloom the beacons, kill the Boss Bloom,
+   leave through the portal before the light fades.
+
+   ---------------------------------------------------------------------------
+   TUNING BLOCK — every number worth changing during playtesting lives here.
+   Nothing below this block hardcodes a balance value. Edit, save, reload.
+   ---------------------------------------------------------------------------
+   ========================================================================== */
+
+const CONFIG = {
+
+  /* --- RUN / PACING ------------------------------------------------------ */
+  /* A STRICT sixty: the clock starts at 60 and the run is over at 0, full stop.
+     The GDD's "darkness reclaims the ground you haven't bloomed" beat happens
+     INSIDE that minute rather than after it — the light starts going with
+     DUSK_WINDOW_SECONDS left, and for those last seconds unbloomed ground bites
+     while bloomed ground holds. Set the window to 0 to end the run clean. */
+  LIGHT_SECONDS:            60,   // clock the player races. The run ends at 0.
+  DUSK_WINDOW_SECONDS:      8,    // the last N seconds are the reclaim
+  DUSK_DPS:                 30,   // damage/sec on UNBLOOMED ground, ramped in
+  DUSK_BLOOMED_DPS:         0,    // damage/sec on BLOOMED ground — this is why
+                                  // blooming ground is worth doing at all
+  TARGET_CLEAR_SECONDS:     45,   // design target for an expert route (readout only)
+
+  /* --- MAP --------------------------------------------------------------- */
+  MAP_W:                    42,   // tiles
+  MAP_H:                    42,
+  STRUCTURE_COUNT:          32,   // monoliths / ruin blocks
+  STRUCTURE_MIN:            1,    // min footprint in tiles
+  STRUCTURE_MAX:            3,    // max footprint in tiles
+  SPAWN_CLEAR_RADIUS:       5.0,  // no structures/enemies this close to spawn
+
+  /* --- CAMERA / RENDER --------------------------------------------------- */
+  TILE_W:                   64,   // iso diamond width  (px at zoom 1)
+  TILE_H:                   32,   // iso diamond height (px at zoom 1)
+  ZOOM:                     0.92, // pulled back to macro-tactical
+  ZOOM_REF_HEIGHT:          810,  // zoom scales with viewport height off this, so a
+                                  // 1080p screen frames the same amount of ground as
+                                  // a laptop instead of revealing the whole map
+  CAMERA_LERP:              9.0,  // camera follow stiffness
+  CAMERA_LOOKAHEAD:         1.6,  // tiles of lead toward the aim cursor
+
+  /* --- PLAYER ------------------------------------------------------------ */
+  PLAYER_SPEED:             7.6,  // tiles / sec
+  PLAYER_MAX_HP:            100,
+  PLAYER_RADIUS:            0.42,
+  PLAYER_IFRAMES:           0.45, // sec of invulnerability after a hit
+
+  /* --- WEAPON (seed-bolts) -----------------------------------------------
+     Hold the left mouse button to fire; you aim with the cursor. Nothing is
+     automatic — releasing the button stops the gun. */
+  BOLT_DAMAGE:              13,
+  BOLT_SPEED:               24,   // tiles / sec
+  BOLT_COOLDOWN:            0.150,// sec between shots while the button is held
+  BOLT_LIFE:                0.80, // sec  -> range ~19 tiles
+  BOLT_PIERCE:              0,    // extra enemies a bolt passes through
+  BOLT_RADIUS:              0.34,
+  BOLT_MUZZLE_OFFSET:       0.12, // tiles ahead of the player the bolt starts.
+                                  // Keep this small: a large offset made bolts
+                                  // spawn PAST anything sitting on top of you.
+  BOLT_STEP_MAX:            0.30, // tiles per collision sub-step. Bolts move
+                                  // 0.4 tiles/frame, so without sub-stepping
+                                  // they tunnel straight through small enemies.
+
+  /* --- BEACON FLOWERS ----------------------------------------------------- */
+  FLOWER_COUNT:             3,    // one of each type: economy, healing, buff
+  FLOWER_HOLD_RADIUS:       2.8,  // tiles — stand inside to charge the bloom
+  FLOWER_HOLD_SECONDS:      3.2,  // tiles of hold-time to bloom it
+  // FRAGILE #1: leaving the radius. 0 = progress PAUSES (kite-friendly).
+  // >= 1/FLOWER_HOLD_SECONDS = full reset by the time you cross the map.
+  // Default is a slow bleed: you can dodge out for a beat, not run away.
+  FLOWER_DECAY_PER_SEC:     0.34, // fraction of total progress lost per sec outside
+  FLOWER_BLOOM_RADIUS:      14.0,  // tiles of terrain this flower lights permanently
+  FLOWER_LIGHT_SPREAD:      7.0,  // tiles/sec the light front travels outward on bloom
+  FLOWER_MIN_SEPARATION:    15.0, // tiles — keeps flowers from clustering
+  FLOWER_MIN_DIST_SPAWN:    7.0,
+  // FRAGILE #3: guaranteed placement instead of pure random. The healing flower
+  // is forced into a band near the spawn->boss corridor so a bad roll can't
+  // strand it behind you.
+  HEAL_CORRIDOR_MAX_OFFSET: 11.0, // tiles of perpendicular offset from that corridor
+
+  /* --- FLOWER EFFECTS ----------------------------------------------------- */
+  ECON_PASSIVE_PER_SEC:     1.4,  // silver dollars/sec once Coinpetal is lit
+  ECON_DROP_MULT:           1.6,  // enemy drop multiplier once lit
+  HEAL_INSTANT:             35,   // HP restored the moment Balmbloom opens
+  HEAL_REGEN_PER_SEC:       3.0,  // HP/sec afterwards
+  BUFF_DAMAGE_MULT:         1.35, // Ironvine
+  BUFF_FIRERATE_MULT:       1.18,
+
+  /* --- DIFFICULTY RAMP ------------------------------------------------------
+     The plateau does NOT start full. A handful of enemies sit out in the dark at
+     the start, and pressure is added in waves that grow as the run goes on, so
+     the first fifteen seconds teach one enemy at a time.
+     Kinds unlock on a clock: rusher immediately, spitter next, swarm last.
+     -------------------------------------------------------------------------- */
+  START_RUSHERS:            3,    // pre-placed at run start. That is all.
+  START_SPITTERS:           1,
+  START_MIN_DIST_SPAWN:     14.0, // nothing is waiting on top of you
+  BOSS_GUARD_COUNT:         3,    // sits by the boss; punishes a cold rush
+
+  WAVE_FIRST_AT:            6.5,  // sec of quiet before anything is sent
+  WAVE_INTERVAL:            6.5,  // sec between waves at the start of the run
+  WAVE_INTERVAL_MIN:        3.4,  // floor once the run is old
+  WAVE_INTERVAL_DECAY:      0.045,// sec shaved off the interval per sec elapsed
+  WAVE_SIZE_BASE:           1,    // enemies per wave at t=0
+  WAVE_SIZE_PER_SEC:        0.060,// extra enemies per wave per sec elapsed
+  WAVE_SIZE_MAX:            5,
+  ENEMY_CAP_BASE:           6,    // hard cap on live enemies at t=0
+  ENEMY_CAP_PER_SEC:        0.32, // cap growth per sec elapsed
+  ENEMY_CAP_MAX:            22,
+  SPITTER_UNLOCK_AT:        11.0, // sec — waves can include spitters from here
+  MITE_UNLOCK_AT:           22.0, // sec — swarms arrive last, once you can shoot
+  SPAWN_MIN_DIST_PLAYER:    13.0, // waves always arrive from out in the dark
+  SPAWN_MAX_DIST_PLAYER:    24.0,
+  ENEMY_AGGRO_RANGE:        12.0, // tiles
+
+  /* --- ENEMIES ------------------------------------------------------------ */
+  /* Every speed here is below PLAYER_SPEED: you can always disengage on foot. */
+  RUSHER_HP:                30,  RUSHER_SPEED: 4.9, RUSHER_DAMAGE: 11, RUSHER_RADIUS: 0.52,
+  RUSHER_LUNGE_RANGE:       4.6, RUSHER_LUNGE_MULT: 1.9, RUSHER_LUNGE_TIME: 0.40,
+  RUSHER_LUNGE_TELEGRAPH:   0.32, // sec of visible wind-up before it commits
+  RUSHER_DROP:              3,
+
+  SPITTER_HP:               24,  SPITTER_SPEED: 2.8, SPITTER_RADIUS: 0.50,
+  SPITTER_RANGE:            9.5, SPITTER_KEEP_DIST: 7.0,
+  SPITTER_SHOT_COOLDOWN:    1.75, SPITTER_SHOT_DAMAGE: 8, SPITTER_SHOT_SPEED: 10,
+  SPITTER_DROP:             4,
+
+  /* Mites dart in, land one hit, then peel off. They never sit on top of you —
+     that was the bug where a swarm latched on and could not be shot free. */
+  MITE_HP:                  8,   MITE_SPEED: 5.6, MITE_DAMAGE: 4, MITE_RADIUS: 0.34,
+  MITE_ORBIT_JITTER:        1.6,
+  MITE_STANDOFF:            1.25, // tiles it holds while circling, before a dart
+  MITE_DART_COOLDOWN:       1.5,  // sec between dive attempts
+  MITE_RETREAT_TIME:        1.1,  // sec it backs off after connecting or being hit
+  MITE_RETREAT_MULT:        1.15,
+  MITE_PER_CLUSTER:         3,    // a mite wave sends this many at once
+  MITE_DROP:                1,
+
+  /* --- CHESTS (Seed Caches) ----------------------------------------------- */
+  CHEST_COUNT:              3,
+  CHEST_COST:               12,   // silver dollars
+  CHEST_COST_ESCALATION:    7,    // each chest opened raises the next one's price
+  CHEST_INTERACT_RADIUS:    1.9,
+  CHEST_MIN_SEPARATION:     11.0,
+
+  /* --- BOSS BLOOM ----------------------------------------------------------
+     The run's difficulty lives HERE, not in how crowded the map is. Going in
+     cold has to fail; going in with beacons lit has to work. These damage
+     numbers are what separates those two outcomes — raise them to punish the
+     cold rush harder, lower them if prepared players are dying too. */
+  BOSS_HP:                  1150,
+  BOSS_RADIUS:              1.9,
+  BOSS_TRIGGER_RADIUS:      6.5,  // step inside to begin the charge-up
+  BOSS_CHARGE_SECONDS:      3.0,  // FRAGILE #2: the "you are committing" window
+  BOSS_CHARGE_DECAY:        1.4,  // charge lost per sec if you back out (0 = it sticks)
+  BOSS_MIN_DIST_SPAWN:      26.0, // reachable from turn one, but a real walk
+  BOSS_CONTACT_DAMAGE:      26,
+
+  BOSS_BARRAGE_COOLDOWN:    2.2,  // radial petal-shot
+  BOSS_BARRAGE_PETALS:      11,
+  BOSS_BARRAGE_SPEED:       8.0,
+  BOSS_BARRAGE_DAMAGE:      17,
+
+  BOSS_SWEEP_COOLDOWN:      5.4,  // rotating light-lash
+  BOSS_SWEEP_WINDUP:        1.1,
+  BOSS_SWEEP_DURATION:      2.2,
+  BOSS_SWEEP_DAMAGE:        27,
+  BOSS_SWEEP_ARC:           0.42, // radians of the lash
+  BOSS_SWEEP_LENGTH:        11.0,
+
+  BOSS_SEED_COOLDOWN:       7.5,  // spits mites
+  BOSS_SEED_COUNT:          4,
+  BOSS_ENRAGE_AT:           0.35, // hp fraction; cooldowns scale down below this
+  BOSS_ENRAGE_MULT:         0.66,
+
+  BOSS_BLOOM_RADIUS:        16.0, // ground its death floods with light
+
+  /* --- PORTAL --------------------------------------------------------------- */
+  PORTAL_BLOOM_SECONDS:     1.5,  // petals unfurling into existence
+  PORTAL_RADIUS:            2.0,
+
+  /* --- READABILITY ------------------------------------------------------------ */
+  CARD_SECONDS:             5.0,  // how long an item / beacon card stays up
+  /* The wilted beacon you spawn at. Its strength used to be 0.30, below the 0.42
+     counting threshold, so the ground you start on lit up visually but counted
+     for nothing and every run opened on a flat 0%. It now clears the threshold,
+     so you start the run with a small foothold instead of nothing. */
+  /* The GDD opens "in near-total darkness at a wilted, unlit beacon", and a tile
+     only COUNTS as reclaimed once it is visibly lit (past 0.42). Those two pull
+     against each other: brightness is the only currency the counter accepts.
+     0.56 is the compromise — barely into the green, so the spawn still reads as
+     a dying ember, but the centre clears the threshold so you open on ~1% rather
+     than a flat 0%. Raise STRENGTH for a bigger foothold and a brighter spawn. */
+  SPAWN_BLOOM_RADIUS:       6.5,
+  SPAWN_BLOOM_STRENGTH:     0.56,
+
+  /* --- FEEL ----------------------------------------------------------------- */
+  SHAKE_HIT:                6,
+  SHAKE_BLOOM:              9,
+  SHAKE_BOSS_DEATH:         22,
+  HITSTOP_ON_KILL:          0.045,
+  PARTICLE_BUDGET:          520,
+
+  /* --- DEBUG ---------------------------------------------------------------- */
+  SHOW_SEED:                true,  // seed is printed in the HUD; ?seed=123 to replay a run
+  SHOW_DEBUG:               false, // F1 in game
+};
+
+/* Palette. ACCENT is reserved: active beams, the Boss Bloom, portal activation.
+   Never general UI. */
+const PAL = {
+  base:      '#1A162B',
+  structure: '#271B2E',
+  terrain:   '#122B17',
+  bloom:     '#8BE8A1',
+  accent:    '#00E5FF',
+  ink:       '#0D0B16',
+  bone:      '#C9D6CE',
+  blood:     '#C4374F',
+  /* Silver Dollars. Cold on purpose: the GDD's avoid-list rules out warm colour
+     anywhere except the cyan accent, and gold read as a warm intruder. */
+  silver:    '#B7C6D4',
+};
+/* ============================================================================
+   3D TUNING BLOCK — camera, framing and scene scale.
+
+   Everything about the GAME (timings, damage, waves, placement) still lives in
+   the shared CONFIG above; this block only governs how it is filmed and built.
+   One world unit = one tile of the simulation, so these numbers are in tiles.
+   ========================================================================== */
+
+const CONFIG3D = {
+
+  /* --- camera modes ---------------------------------------------------------
+     Two framings, swapped live with [C].
+
+     'shoulder' is the Risk of Rain camera this build was asked for: pointer
+     locked, mouse-look, reticle pinned to screen centre.
+
+     'highangle' is the GDD's own framing — "high-angle top-down isometric,
+     pulled back to macro-tactical scale, the player kept centered". Pitch and
+     yaw are FIXED (a fixed yaw is what makes a shot isometric rather than
+     merely steep), the camera sits far back and high, the player is dead centre,
+     and the mouse goes back to being a free cursor that aims by raycasting
+     through the screen onto the ground — the isometric build's read of the
+     battlefield, in 3D. Pointer lock is released in this mode, because a locked
+     cursor and a free one cannot both be true.
+
+     The default stays 'shoulder'; the GDD framing is one keypress away rather
+     than replacing a camera that was explicitly chosen. */
+  CAMERA_MODE:        'shoulder',   // 'shoulder' | 'highangle'
+  HIGH_PITCH:         -0.92,   // ~53° down — steep, but the plateau still has depth
+  HIGH_YAW:            0.7854, // 45°, the isometric build's own compass
+  HIGH_DIST:           30,     // macro-tactical pull-back, in tiles
+  HIGH_FOV:            38,     // narrower than the shoulder FOV: less perspective
+                               // divergence, so the read is closer to isometric
+  HIGH_LERP:           9.0,    // a slower, more deliberate follow than shoulder
+
+  /* --- camera ------------------------------------------------------------- */
+  FOV:                 62,     // degrees, vertical
+  FAR:                 220,
+  CAM_DIST:            6.2,    // how far behind the player the camera sits
+  CAM_HEIGHT:          1.75,   // lift above the player's eye line
+  CAM_SHOULDER:        1.05,   // offset to the right — the over-the-shoulder look
+  AIM_MAX_DIST:        44,     // how far out the reticle ray is allowed to land
+  CAM_LERP:            13.0,   // follow stiffness
+  PLAYER_EYE:          1.25,
+  MOUSE_SENSITIVITY:   0.0022, // radians per pixel of mouse movement
+  PITCH_MIN:          -0.62,   // looking down
+  PITCH_MAX:           0.28,   // looking up — clamped so the reticle still
+                               // reaches the ground plane
+  SHAKE_SCALE:         0.012,  // screen shake, converted from the 2D build's pixels
+  LEGEND_SECONDS:      9,      // how long the controls legend lingers before fading
+
+  /* --- atmosphere ---------------------------------------------------------- */
+  /* Fog is what sells the perpetual twilight AND hides the plateau edge. It is
+     also the reason bloomed ground reads from a distance: lit ground beats the
+     fog, unlit ground dissolves into it. */
+  FOG_DENSITY:         0.0125,
+  HORIZON_FILL:        0.045,  // how far the horizon band lifts toward bone
+  RIM_STRENGTH:        0.055,  // the graphic edge line on every silhouette
+  CULL_DIST:           78,     // props past this are skipped entirely
+
+  /* --- scene scale ---------------------------------------------------------- */
+  STRUCTURE_HEIGHT:    1.9,    // multiplier on the sim's structure height
+  FLOWER_HEIGHT:       2.3,
+  FLOWER_PETAL:        0.85,
+  BOSS_HEIGHT:         5.2,
+  BOSS_PETAL:          2.5,
+  BEAM_HEIGHT:         34,     // distant beacons must cut through the dark
+  BOLT_HEIGHT:         0.95,
+  DECAL_HEIGHT:        0.035,  // lift decals off the ground to avoid z-fighting
+  PIP_HEIGHT:          1.9,    // where enemy health pips float
+
+  /* --- performance -----------------------------------------------------------
+     The scene is rendered to a buffer that can be smaller than the window and
+     stretched up. On a weak laptop — which is what a classroom playtest runs on
+     — this is the difference between 25fps and 60fps, and at 0.7 it is barely
+     noticeable on a stylized, flat-shaded scene. Set ADAPTIVE false to pin it. */
+  RENDER_SCALE:        1.0,    // starting scale
+  ADAPTIVE:            true,   // step the scale down when frames get expensive
+  ADAPTIVE_MIN:        0.55,
+  ADAPTIVE_TARGET_MS:  20,     // step down above this frame time
+  ADAPTIVE_GOOD_MS:    12,     // step back up below this
+  MAX_PARTICLE_GLOWS:  90,     // hard cap on additive particle quads per frame
+  PARTICLE_CULL_DIST:  34,
+  GLOW_CULL_DIST:      62,
+
+  /* --- lighting ------------------------------------------------------------- */
+  BEACON_LIGHT:        0.80,   // higher clips the bloom to white; the additive
+                               // core glow supplies the hot centre instead
+  BEACON_LIGHT_RANGE:  1.5,    // multiplier on FLOWER_BLOOM_RADIUS
+  BOSS_LIGHT_RANGE:    30,
+  LANTERN_LIGHT:       1.5,
+  LANTERN_RANGE:       11,
+};
+/* ============================================================================
+   UTIL — rng, math, iso projection, colour, particles
+   ========================================================================== */
+
+/* --- seeded rng (mulberry32) — every run is reproducible from its seed ----- */
+let RNG = null;
+function makeRng(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rnd      = () => RNG();
+const rndR     = (a, b) => a + RNG() * (b - a);
+const rndI     = (a, b) => Math.floor(a + RNG() * (b - a + 1));
+const rndPick  = (arr) => arr[Math.floor(RNG() * arr.length)];
+const rndSign  = () => (RNG() < 0.5 ? -1 : 1);
+
+/* --- math ------------------------------------------------------------------ */
+const TAU   = Math.PI * 2;
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const lerp  = (a, b, t) => a + (b - a) * t;
+const dist2 = (ax, ay, bx, by) => { const dx = bx - ax, dy = by - ay; return dx * dx + dy * dy; };
+const dist  = (ax, ay, bx, by) => Math.sqrt(dist2(ax, ay, bx, by));
+const smooth = (t) => t * t * (3 - 2 * t);
+const ease   = (t) => 1 - Math.pow(1 - t, 3);
+function approach(cur, target, rate, dt) {
+  return cur + (target - cur) * (1 - Math.exp(-rate * dt));
+}
+function normalize(x, y) {
+  const m = Math.hypot(x, y);
+  return m < 1e-6 ? [0, 0] : [x / m, y / m];
+}
+/* deterministic value hash for per-tile texture — no rng calls during render */
+function hash2(x, y) {
+  let h = (x * 374761393 + y * 668265263) | 0;
+  h = (h ^ (h >>> 13)) | 0;
+  h = Math.imul(h, 1274126177) | 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/* --- isometric projection --------------------------------------------------- */
+/* World space is flat tile units (wx, wy). Screen is the iso diamond.          */
+let HW = CONFIG.TILE_W / 2, HH = CONFIG.TILE_H / 2;
+function isoX(wx, wy) { return (wx - wy) * HW; }
+function isoY(wx, wy) { return (wx + wy) * HH; }
+function unIso(sx, sy) { return [(sx / HW + sy / HH) / 2, (sy / HH - sx / HW) / 2]; }
+/* depth key — larger draws later (in front) */
+function depth(wx, wy) { return wx + wy; }
+
+/* --- colour ------------------------------------------------------------------ */
+function hexToRgb(h) {
+  const n = parseInt(h.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+const RGB = {
+  base: hexToRgb(PAL.base), structure: hexToRgb(PAL.structure), terrain: hexToRgb(PAL.terrain),
+  bloom: hexToRgb(PAL.bloom), accent: hexToRgb(PAL.accent), ink: hexToRgb(PAL.ink),
+};
+function mixRgb(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+function rgbStr(c) { return 'rgb(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ')'; }
+function rgbaStr(c, a) { return 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + a + ')'; }
+function hexA(hex, a) { const c = hexToRgb(hex); return rgbaStr(c, a); }
+
+/* --- particles ---------------------------------------------------------------- */
+const particles = [];
+function spawnParticle(wx, wy, vx, vy, life, size, color, glow, gravity) {
+  if (particles.length >= CONFIG.PARTICLE_BUDGET) particles.shift();
+  particles.push({
+    wx, wy, vx, vy, life, maxLife: life, size,
+    color: color || PAL.bloom, glow: glow !== false, g: gravity || 0, z: 0, vz: 0,
+  });
+}
+function burst(wx, wy, n, opts) {
+  const o = opts || {};
+  for (let i = 0; i < n; i++) {
+    const a = rndR(0, TAU), s = rndR(o.smin || 2, o.smax || 8);
+    spawnParticle(
+      wx, wy, Math.cos(a) * s, Math.sin(a) * s,
+      rndR(o.lmin || 0.25, o.lmax || 0.6),
+      rndR(o.zmin || 2, o.zmax || 5),
+      o.color || PAL.bloom, o.glow !== false, o.g || 0
+    );
+  }
+}
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.wx += p.vx * dt; p.wy += p.vy * dt;
+    p.vx *= Math.pow(0.12, dt); p.vy *= Math.pow(0.12, dt);
+    if (p.g) { p.vz -= p.g * dt; p.z = Math.max(0, p.z + p.vz * dt); }
+  }
+}
+
+/* --- floating text ------------------------------------------------------------ */
+const floaters = [];
+function floatText(wx, wy, text, color, size) {
+  floaters.push({ wx, wy, text, color: color || PAL.bloom, size: size || 14, life: 1.0, maxLife: 1.0 });
+}
+function updateFloaters(dt) {
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i];
+    f.life -= dt; f.wy -= dt * 0.7;
+    if (f.life <= 0) floaters.splice(i, 1);
+  }
+}
+
+/* --- notice cards ---------------------------------------------------------------
+   A symbol appearing in the corner told a new player nothing. Anything the run
+   grants you — a cache item, a beacon opening — now pushes a card that names it
+   and says in plain words what it does. Shared by both builds.
+   -------------------------------------------------------------------------------- */
+const cards = [];
+function showCard(title, sub, lines, color, iconId, glyph) {
+  /* one card at a time reads better than a stack; a new one replaces the old */
+  cards.length = 0;
+  cards.push({
+    title, sub, lines: lines || [], color: color || PAL.bloom,
+    iconId: iconId || null, glyph: glyph || null,
+    life: CONFIG.CARD_SECONDS, maxLife: CONFIG.CARD_SECONDS,
+  });
+}
+function updateCards(dt) {
+  for (let i = cards.length - 1; i >= 0; i--) {
+    cards[i].life -= dt;
+    if (cards[i].life <= 0) cards.splice(i, 1);
+  }
+}
+
+/* --- screen shake / hitstop ---------------------------------------------------- */
+let shake = 0, shakeX = 0, shakeY = 0, hitstop = 0;
+function addShake(v) { shake = Math.min(34, shake + v); }
+function addHitstop(v) { hitstop = Math.max(hitstop, v); }
+function updateShake(dt) {
+  shake = approach(shake, 0, 7, dt);
+  shakeX = rndR(-1, 1) * shake;
+  shakeY = rndR(-1, 1) * shake * 0.6;
+}
+
+/* --- audio: tiny synth, no assets, file:// safe --------------------------------- */
+const Audio_ = {
+  ctx: null, muted: false, master: null,
+  init() {
+    if (this.ctx) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.30;
+      this.master.connect(this.ctx.destination);
+    } catch (e) { this.ctx = null; }
+  },
+  blip(freq, dur, type, vol, slide) {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+    o.type = type || 'triangle';
+    o.frequency.setValueAtTime(freq, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, freq * slide), t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol || 0.18, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + dur + 0.02);
+  },
+  noise(dur, vol, freq) {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime, n = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = this.ctx.createBufferSource(); src.buffer = buf;
+    const f = this.ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq || 900;
+    const g = this.ctx.createGain(); g.gain.value = vol || 0.16;
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start(t);
+  },
+  shoot()   { this.blip(680, 0.06, 'square', 0.045, 0.55); },
+  hit()     { this.blip(240, 0.07, 'square', 0.06, 0.7); },
+  kill()    { this.noise(0.16, 0.13, 1400); this.blip(150, 0.14, 'sawtooth', 0.07, 0.4); },
+  hurt()    { this.noise(0.24, 0.20, 500); this.blip(110, 0.20, 'sawtooth', 0.13, 0.5); },
+  bloom()   { this.blip(392, 0.30, 'sine', 0.16, 2.0); this.blip(587, 0.42, 'sine', 0.11, 1.5); },
+  pickup()  { this.blip(880, 0.09, 'sine', 0.10, 1.5); },
+  coin()    { this.blip(1320, 0.045, 'sine', 0.035, 1.2); },
+  chest()   { this.blip(523, 0.18, 'triangle', 0.14, 1.6); this.blip(784, 0.30, 'sine', 0.10, 1.4); },
+  charge()  { this.blip(160, 0.5, 'sawtooth', 0.09, 3.2); },
+  bossHurt(){ this.blip(90, 0.09, 'square', 0.05, 0.8); },
+  bossDie() { this.noise(1.1, 0.30, 2600); this.blip(220, 1.3, 'sine', 0.20, 4.0); },
+  portal()  { this.blip(660, 0.9, 'sine', 0.16, 2.2); this.blip(990, 1.1, 'sine', 0.10, 1.8); },
+  win()     { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.blip(f, 0.5, 'sine', 0.16, 1.0), i * 130)); },
+  lose()    { [330, 262, 196, 147].forEach((f, i) => setTimeout(() => this.blip(f, 0.6, 'triangle', 0.15, 0.8), i * 190)); },
+};
+/* ============================================================================
+   WORLD — terrain, bloom state, structures, procedural placement
+   ========================================================================== */
+
+const World = {
+  w: 0, h: 0,
+  bloom: null,        // Float32Array — LAND BLOOM STATE. 0 = dark, 1 = fully bloomed.
+  target: null,       // Float32Array — what each tile is climbing toward
+  bloomedTiles: 0,    // running count of tiles past BLOOM_READ_THRESHOLD
+  totalTiles: 0,
+  structures: [],     // {x,y,w,h,ht,seed}  axis-aligned in tile space
+  solid: null,        // Uint8Array — 1 where a structure blocks movement
+  solidH: null,       // Float32Array — that structure's height, for 3D camera occlusion
+  toneTerrain: 0,     // per-session palette lean (see randomizeTone)
+  toneStructure: 0,
+  ceiling: 1,          // the most of this map any run could light
+};
+
+const BLOOM_READ_THRESHOLD = 0.42; // a tile "counts as bloomed" past this
+
+function worldInit() {
+  World.w = CONFIG.MAP_W; World.h = CONFIG.MAP_H;
+  World.totalTiles = World.w * World.h;
+  World.bloom  = new Float32Array(World.totalTiles);
+  World.target = new Float32Array(World.totalTiles);
+  World.solid  = new Uint8Array(World.totalTiles);
+  World.solidH = new Float32Array(World.totalTiles);
+  World.structures.length = 0;
+  World.bloomedTiles = 0;
+  randomizeTone();
+}
+
+/* per-session: which palette tone dominates terrain vs structures */
+function randomizeTone() {
+  World.toneTerrain   = rndR(-0.10, 0.16); // + leans toward base violet, - toward deep green
+  World.toneStructure = rndR(-0.12, 0.18);
+}
+
+const tIdx = (x, y) => y * World.w + x;
+const inMap = (x, y) => x >= 0 && y >= 0 && x < World.w && y < World.h;
+
+function bloomAt(wx, wy) {
+  const x = Math.floor(wx), y = Math.floor(wy);
+  if (!inMap(x, y)) return 0;
+  return World.bloom[tIdx(x, y)];
+}
+function isSolid(wx, wy) {
+  const x = Math.floor(wx), y = Math.floor(wy);
+  if (!inMap(x, y)) return true;
+  return World.solid[tIdx(x, y)] === 1;
+}
+
+/* ---- structures ------------------------------------------------------------ */
+function generateStructures(spawnX, spawnY) {
+  let attempts = 0;
+  while (World.structures.length < CONFIG.STRUCTURE_COUNT && attempts < 900) {
+    attempts++;
+    /* a third of them are tall 1x1 monoliths; the rest squat ruin blocks */
+    const isSpire = rnd() < 0.36;
+    const w = isSpire ? 1 : rndI(CONFIG.STRUCTURE_MIN, CONFIG.STRUCTURE_MAX);
+    const h = isSpire ? 1 : rndI(CONFIG.STRUCTURE_MIN, CONFIG.STRUCTURE_MAX);
+    const x = rndI(2, World.w - w - 3);
+    const y = rndI(2, World.h - h - 3);
+    const cx = x + w / 2, cy = y + h / 2;
+    if (dist(cx, cy, spawnX, spawnY) < CONFIG.SPAWN_CLEAR_RADIUS + 2) continue;
+    // keep corridors open: reject if it touches an existing block
+    let bad = false;
+    for (const s of World.structures) {
+      if (x < s.x + s.w + 2 && x + w + 2 > s.x && y < s.y + s.h + 2 && y + h + 2 > s.y) { bad = true; break; }
+    }
+    if (bad) continue;
+    const seed = rnd();
+    const st = {
+      x, y, w, h, seed, spire: isSpire,
+      ht: isSpire ? rndR(3.2, 6.2) : rndR(0.7, 2.2),
+      broken: rnd() < 0.5,
+    };
+    World.structures.push(st);
+    for (let iy = y; iy < y + h; iy++) for (let ix = x; ix < x + w; ix++) {
+      World.solid[tIdx(ix, iy)] = 1;
+      World.solidH[tIdx(ix, iy)] = st.ht;
+    }
+  }
+}
+
+/* ---- bloom propagation ------------------------------------------------------ */
+/* A bloomed beacon paints a permanent target value into the tile field; the
+   actual bloom value climbs toward it over time so you SEE the light travel. */
+function paintBloom(cx, cy, radius, strength) {
+  const x0 = Math.max(0, Math.floor(cx - radius)), x1 = Math.min(World.w - 1, Math.ceil(cx + radius));
+  const y0 = Math.max(0, Math.floor(cy - radius)), y1 = Math.min(World.h - 1, Math.ceil(cy + radius));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const d = dist(x + 0.5, y + 0.5, cx, cy);
+      if (d > radius) continue;
+      const v = (1 - d / radius);
+      const val = clamp(smooth(v) * (strength || 1), 0, 1);
+      const i = tIdx(x, y);
+      if (val > World.target[i]) World.target[i] = val;
+    }
+  }
+}
+
+function updateBloomField(dt) {
+  const b = World.bloom, t = World.target;
+  const rate = CONFIG.FLOWER_LIGHT_SPREAD * 0.30;
+  let count = 0, moved = false;
+  for (let i = 0; i < b.length; i++) {
+    if (b[i] < t[i]) {
+      b[i] = Math.min(t[i], b[i] + rate * dt);
+      moved = true;
+    }
+    if (b[i] >= BLOOM_READ_THRESHOLD) count++;
+  }
+  World.bloomedTiles = count;
+  /* the 3D build rebuilds ground vertex colours only when this flips */
+  if (moved && typeof Ground !== 'undefined' && Ground) Ground.dirty = true;
+}
+
+function bloomPercent() {
+  return World.bloomedTiles / World.totalTiles;
+}
+
+/* The running count is maintained by updateBloomField during play. Anything
+   that writes the field outside the sim loop — run generation, above all — has
+   to recount, or the meter reports the previous run's number. */
+function recountBloom() {
+  let n = 0;
+  for (let i = 0; i < World.bloom.length; i++) if (World.bloom[i] >= BLOOM_READ_THRESHOLD) n++;
+  World.bloomedTiles = n;
+}
+
+/* ---------------------------------------------------------------------------
+   How much of this plateau CAN be lit. Three beacons and the Boss Bloom cover
+   roughly 42% of the map — the rest is out of reach of any light source in the
+   run, by design. The meter marks this so a full clear doesn't read as a
+   failure to finish something.
+   --------------------------------------------------------------------------- */
+function computeBloomCeiling() {
+  const snapshot = World.target.slice();
+  for (const f of flowers) paintBloom(f.wx, f.wy, CONFIG.FLOWER_BLOOM_RADIUS, 1.0);
+  paintBloom(Boss.wx, Boss.wy, CONFIG.BOSS_BLOOM_RADIUS, 1.0);
+  let n = 0;
+  for (let i = 0; i < World.target.length; i++) if (World.target[i] >= BLOOM_READ_THRESHOLD) n++;
+  World.ceiling = n / World.totalTiles;
+  World.target.set(snapshot);
+}
+
+/* When the light fades, unbloomed ground goes to true black and starts biting. */
+let duskReclaim = 0; // 0..1 visual progress of the dark rolling back in
+
+/* ---- procedural placement helpers -------------------------------------------- */
+function isOpenSpot(x, y, clearance) {
+  const c = clearance || 1;
+  for (let iy = Math.floor(y - c); iy <= Math.ceil(y + c); iy++) {
+    for (let ix = Math.floor(x - c); ix <= Math.ceil(x + c); ix++) {
+      if (!inMap(ix, iy)) return false;
+      if (World.solid[tIdx(ix, iy)] === 1) return false;
+    }
+  }
+  return true;
+}
+
+function findOpenSpot(opts) {
+  const o = opts || {};
+  const clearance = o.clearance || 1.6;
+  const avoid = o.avoid || [];
+  const minSep = o.minSep || 0;
+  const margin = o.margin || 3;
+  for (let tries = 0; tries < 500; tries++) {
+    const relax = tries / 500;
+    const x = rndR(margin, World.w - margin);
+    const y = rndR(margin, World.h - margin);
+    if (!isOpenSpot(x, y, clearance)) continue;
+    if (o.minDistFrom && dist(x, y, o.minDistFrom[0], o.minDistFrom[1]) < o.minDistFrom[2] * (1 - relax * 0.5)) continue;
+    if (o.maxDistFrom && dist(x, y, o.maxDistFrom[0], o.maxDistFrom[1]) > o.maxDistFrom[2] * (1 + relax * 0.5)) continue;
+    let bad = false;
+    for (const a of avoid) {
+      if (dist(x, y, a[0], a[1]) < minSep * (1 - relax * 0.6)) { bad = true; break; }
+    }
+    if (bad) continue;
+    if (o.test && !o.test(x, y, relax)) continue;
+    return [x, y];
+  }
+  // last resort: any open tile
+  for (let tries = 0; tries < 2000; tries++) {
+    const x = rndR(margin, World.w - margin), y = rndR(margin, World.h - margin);
+    if (isOpenSpot(x, y, 1.0)) return [x, y];
+  }
+  return [World.w / 2, World.h / 2];
+}
+
+/* perpendicular distance from point to the spawn->boss corridor */
+function corridorOffset(px, py, ax, ay, bx, by) {
+  const vx = bx - ax, vy = by - ay;
+  const len2 = vx * vx + vy * vy;
+  if (len2 < 1e-6) return dist(px, py, ax, ay);
+  let t = ((px - ax) * vx + (py - ay) * vy) / len2;
+  t = clamp(t, 0, 1);
+  return dist(px, py, ax + vx * t, ay + vy * t);
+}
+
+/* ---- collision --------------------------------------------------------------- */
+/* circle vs the solid tile field — resolves on each axis so you slide along walls */
+function moveWithCollision(ent, dx, dy) {
+  const r = ent.r;
+  let nx = ent.wx + dx;
+  if (!circleHitsSolid(nx, ent.wy, r)) ent.wx = nx;
+  let ny = ent.wy + dy;
+  if (!circleHitsSolid(ent.wx, ny, r)) ent.wy = ny;
+  ent.wx = clamp(ent.wx, r, World.w - r);
+  ent.wy = clamp(ent.wy, r, World.h - r);
+}
+
+function circleHitsSolid(cx, cy, r) {
+  const x0 = Math.floor(cx - r), x1 = Math.floor(cx + r);
+  const y0 = Math.floor(cy - r), y1 = Math.floor(cy + r);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      if (!inMap(x, y)) return true;
+      if (World.solid[tIdx(x, y)] !== 1) continue;
+      const nxp = clamp(cx, x, x + 1), nyp = clamp(cy, y, y + 1);
+      if (dist2(cx, cy, nxp, nyp) < r * r) return true;
+    }
+  }
+  return false;
+}
+
+/* cheap line-of-sight for the spitter so it doesn't shoot through monoliths */
+function hasLOS(ax, ay, bx, by) {
+  const d = dist(ax, ay, bx, by);
+  const steps = Math.ceil(d * 2);
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    if (isSolid(ax + (bx - ax) * t, ay + (by - ay) * t)) return false;
+  }
+  return true;
+}
+
+/* height of whatever occupies this tile, in sim units (0 when open) */
+function solidHeightAt(wx, wy) {
+  const x = Math.floor(wx), y = Math.floor(wy);
+  if (!inMap(x, y)) return 0;
+  return World.solidH ? World.solidH[tIdx(x, y)] : 0;
+}
+/* ============================================================================
+   ENTITIES & RUN GENERATION
+   ========================================================================== */
+
+const STATE = { TITLE: 0, PLAY: 1, WIN: 2, LOSE: 3 };
+
+const Game = {
+  state: STATE.TITLE,
+  seed: 0,
+  time: 0,            // seconds elapsed this run
+  timeLeft: 0,
+  dusk: false,        // the light has faded
+  duskTimer: 0,
+  clearTime: 0,
+  paused: false,
+  runs: 0,
+  best: null,         // best clear time this session
+  intent: null,       // headless playtest override; null during real play
+  deathContext: '',   // why the run ended, so the end card can say something useful
+};
+
+const Player = {
+  wx: 0, wy: 0, r: CONFIG.PLAYER_RADIUS,
+  hp: 100, maxHp: 100,
+  vx: 0, vy: 0,
+  aimX: 1, aimY: 0,
+  facing: 1,
+  fireTimer: 0,
+  firing: false,
+  iframes: 0,
+  silver: 0,
+  totalSilver: 0,
+  // multipliers, rebuilt from flowers + items each frame
+  dmgMult: 1, rateMult: 1, speedMult: 1, pierce: 0,
+  items: [],
+  hurtFlash: 0,
+  bob: 0,
+};
+
+/* --- BEACON FLOWERS ---------------------------------------------------------
+   Each beacon states what it does, everywhere it appears: in its capture ring,
+   on the card when it opens, and under its glyph in the tracker. A name alone
+   cannot carry a mechanic — "IRONVINE" told the player nothing.
+
+   `effect` is the one-word promise. `lines` are the exact numbers, read from
+   CONFIG so they can never drift away from what the game actually does.
+   -------------------------------------------------------------------------- */
+const FLOWER_TYPES = {
+  econ: {
+    id: 'econ', name: 'LUNARIA',
+    effect: 'SILVER',
+    tag: 'Flat seed-discs, thin and cold as coin',
+    /* Lunaria annua is really called the silver dollar plant — its seed pods are
+       round silver discs. The currency is Silver Dollars, so the beacon that
+       prints it is that plant. It used to be gold, which matched nothing. */
+    petal: '#C6D4DF', core: '#EEF6FB',
+    disc: true,
+  },
+  heal: {
+    id: 'heal', name: 'BALMBLOOM',
+    effect: 'VITALITY',
+    tag: 'Its sap closes what the dark opened',
+    petal: '#8BE8C8', core: '#DFFFF0',
+  },
+  buff: {
+    id: 'buff', name: 'THORNCROWN',
+    effect: 'FIREPOWER',
+    tag: 'It sharpens the seed before you throw it',
+    petal: '#B6A8E8', core: '#CFC4FF',
+  },
+};
+
+/* the exact numbers, derived from CONFIG so the UI cannot lie about the game */
+function flowerLines(id) {
+  if (id === 'econ') return [
+    '+' + CONFIG.ECON_PASSIVE_PER_SEC.toFixed(1) + ' silver every second',
+    'enemies drop ' + Math.round((CONFIG.ECON_DROP_MULT - 1) * 100) + '% more silver',
+  ];
+  if (id === 'heal') return [
+    '+' + CONFIG.HEAL_INSTANT + ' vitality the moment it opens',
+    'then +' + CONFIG.HEAL_REGEN_PER_SEC.toFixed(1) + ' vitality every second',
+  ];
+  return [
+    '+' + Math.round((CONFIG.BUFF_DAMAGE_MULT - 1) * 100) + '% seed-bolt damage',
+    '+' + Math.round((CONFIG.BUFF_FIRERATE_MULT - 1) * 100) + '% fire rate',
+  ];
+}
+
+let flowers = [];
+function makeFlower(type, wx, wy) {
+  return {
+    type, wx, wy, r: 0.6,
+    progress: 0, bloomed: false, bloomAnim: 0,
+    inRadius: false, sway: rndR(0, TAU),
+  };
+}
+
+/* --- CHESTS ------------------------------------------------------------------ */
+/* apply() must be PURE stat maths — it is re-run from scratch on every
+   recompute. One-shot healing goes in `heal`, granted once at pickup. */
+/* `stat` is the compact label that sits under the icon in the HUD, so a player
+   can read what they are carrying without remembering what a symbol meant. */
+const ITEM_POOL = [
+  { id: 'thorn',  name: 'THORNSEED',    desc: 'Your seed-bolts bite deeper',       stat: '+30% DMG',   heal: 0,  apply: p => { p.dmgMult   *= 1.30; } },
+  { id: 'wind',   name: 'WINDROOT',     desc: 'You cover ground faster',           stat: '+16% SPEED', heal: 0,  apply: p => { p.speedMult *= 1.16; } },
+  { id: 'nectar', name: 'NECTAR HUSK',  desc: 'More vitality, and it fills now',   stat: '+25 VIT',    heal: 25, apply: p => { p.maxHp     += 25;   } },
+  { id: 'pollen', name: 'POLLEN BURST', desc: 'Bolts pass through one more enemy', stat: 'PIERCE +1',  heal: 0,  apply: p => { p.pierce    += 1;    } },
+  { id: 'quick',  name: 'QUICKVINE',    desc: 'You fire faster while holding',     stat: '+22% RATE',  heal: 0,  apply: p => { p.rateMult  *= 1.22; } },
+  { id: 'husk',   name: 'DUSKHUSK',     desc: 'A little of both, harder to kill',  stat: '+18% DMG',   heal: 10, apply: p => { p.dmgMult   *= 1.18; p.maxHp += 10; } },
+];
+
+let chests = [];
+function makeChest(wx, wy, cost) {
+  return { wx, wy, r: 0.7, cost, opened: false, openAnim: 0, item: null, sway: rndR(0, TAU) };
+}
+
+/* --- ENEMIES ------------------------------------------------------------------ */
+let enemies = [];
+let enemyBolts = [];
+let bolts = [];
+let pickups = [];
+
+function makeEnemy(kind, wx, wy) {
+  const e = { kind, wx, wy, vx: 0, vy: 0, hitFlash: 0, dead: false, wob: rndR(0, TAU), t: rndR(0, 4) };
+  if (kind === 'rusher') {
+    e.hp = CONFIG.RUSHER_HP; e.maxHp = CONFIG.RUSHER_HP;
+    e.r = CONFIG.RUSHER_RADIUS; e.speed = CONFIG.RUSHER_SPEED;
+    e.lunge = 0; e.windup = 0; e.lungeCd = rndR(0.8, 2.0);
+    e.dirX = 1; e.dirY = 0;
+  } else if (kind === 'spitter') {
+    e.hp = CONFIG.SPITTER_HP; e.maxHp = CONFIG.SPITTER_HP;
+    e.r = CONFIG.SPITTER_RADIUS; e.speed = CONFIG.SPITTER_SPEED;
+    e.shotCd = rndR(0.6, CONFIG.SPITTER_SHOT_COOLDOWN);
+  } else { // mite
+    e.hp = CONFIG.MITE_HP; e.maxHp = CONFIG.MITE_HP;
+    e.r = CONFIG.MITE_RADIUS; e.speed = CONFIG.MITE_SPEED;
+    e.orbit = rndR(0, TAU); e.orbitDir = rndSign();
+    e.darting = 0; e.retreat = 0; e.dartCd = rndR(0.5, CONFIG.MITE_DART_COOLDOWN);
+  }
+  e.touchCd = 0;
+  /* a beat of grace after arriving, so a wave never lands mid-swing on you */
+  e.spawnGrace = 0.45;
+  return e;
+}
+
+function makePickup(wx, wy, value) {
+  const a = rndR(0, TAU), s = rndR(1.5, 4.0);
+  return { wx, wy, vx: Math.cos(a) * s, vy: Math.sin(a) * s, value, life: 26, spin: rndR(0, TAU), pulled: false };
+}
+
+/* --- BOSS BLOOM ---------------------------------------------------------------- */
+const Boss = {
+  wx: 0, wy: 0, r: CONFIG.BOSS_RADIUS,
+  hp: 0, maxHp: 0,
+  charge: 0,           // 0..1 activation charge-up
+  active: false,
+  dead: false,
+  deathAnim: 0,
+  openness: 0,         // petals unfurl as it activates
+  hitFlash: 0,
+  barrageCd: 0, sweepCd: 0, seedCd: 0,
+  sweepState: 0,       // 0 idle, 1 windup, 2 sweeping
+  sweepT: 0, sweepAngle: 0, sweepDir: 1,
+  sway: 0,
+  enraged: false,
+};
+
+const Portal = { wx: 0, wy: 0, r: CONFIG.PORTAL_RADIUS, exists: false, anim: 0 };
+
+/* ============================================================================
+   RUN GENERATION — everything randomized per session, from the seed
+   ========================================================================== */
+function generateRun(seed) {
+  Game.seed = seed >>> 0;
+  RNG = makeRng(Game.seed);
+
+  worldInit();
+  particles.length = 0; floaters.length = 0; cards.length = 0;
+  enemies.length = 0; bolts.length = 0; enemyBolts.length = 0; pickups.length = 0;
+  flowers = []; chests = [];
+  duskReclaim = 0;
+
+  /* spawn: a random edge-ish quadrant so the map doesn't feel memorized by position */
+  const pad = 6;
+  const corner = rndI(0, 3);
+  const spawnX = (corner === 0 || corner === 3) ? rndR(pad, pad + 4) : rndR(World.w - pad - 4, World.w - pad);
+  const spawnY = (corner === 0 || corner === 1) ? rndR(pad, pad + 4) : rndR(World.h - pad - 4, World.h - pad);
+
+  generateStructures(spawnX, spawnY);
+
+  Player.wx = spawnX; Player.wy = spawnY;
+  Player.maxHp = CONFIG.PLAYER_MAX_HP; Player.hp = CONFIG.PLAYER_MAX_HP;
+  Player.silver = 0; Player.totalSilver = 0;
+  Player.items = []; Player.pierce = 0;
+  Player.dmgMult = 1; Player.rateMult = 1; Player.speedMult = 1;
+  Player.fireTimer = 0; Player.iframes = 0; Player.hurtFlash = 0; Player.firing = false;
+  Player.vx = 0; Player.vy = 0; Player.aimX = 1; Player.aimY = 0;
+
+  /* --- BOSS: far, reachable, no gate -------------------------------------- */
+  const bpos = findOpenSpot({
+    clearance: 3.2, margin: 5,
+    minDistFrom: [spawnX, spawnY, CONFIG.BOSS_MIN_DIST_SPAWN],
+  });
+  Boss.wx = bpos[0]; Boss.wy = bpos[1];
+  Boss.hp = CONFIG.BOSS_HP; Boss.maxHp = CONFIG.BOSS_HP;
+  Boss.charge = 0; Boss.active = false; Boss.dead = false; Boss.deathAnim = 0;
+  Boss.openness = 0; Boss.hitFlash = 0; Boss.enraged = false;
+  Boss.barrageCd = 1.2; Boss.sweepCd = CONFIG.BOSS_SWEEP_COOLDOWN; Boss.seedCd = 4.0;
+  Boss.sweepState = 0; Boss.sweepT = 0; Boss.sway = 0;
+  Portal.exists = false; Portal.anim = 0; Portal.wx = Boss.wx; Portal.wy = Boss.wy;
+
+  /* --- FLOWERS: guaranteed spread, healing kept near the corridor ---------- */
+  /* FRAGILE #3 mitigation. Types are shuffled so which flower is where varies,
+     but the HEAL flower is always placed within HEAL_CORRIDOR_MAX_OFFSET of the
+     straight line from spawn to boss — an unlucky roll can't strand it. */
+  const types = ['econ', 'heal', 'buff'];
+  for (let i = types.length - 1; i > 0; i--) { const j = rndI(0, i); const t = types[i]; types[i] = types[j]; types[j] = t; }
+
+  const placed = [];
+  // heal first, constrained to the corridor
+  const healPos = findOpenSpot({
+    clearance: 2.4, margin: 4,
+    minDistFrom: [spawnX, spawnY, CONFIG.FLOWER_MIN_DIST_SPAWN],
+    test: (x, y, relax) =>
+      corridorOffset(x, y, spawnX, spawnY, Boss.wx, Boss.wy) < CONFIG.HEAL_CORRIDOR_MAX_OFFSET * (1 + relax) &&
+      dist(x, y, Boss.wx, Boss.wy) > CONFIG.BOSS_TRIGGER_RADIUS + 4,
+  });
+  flowers.push(makeFlower('heal', healPos[0], healPos[1]));
+  placed.push(healPos);
+
+  for (const t of types) {
+    if (t === 'heal') continue;
+    const p = findOpenSpot({
+      clearance: 2.4, margin: 4, avoid: placed, minSep: CONFIG.FLOWER_MIN_SEPARATION,
+      minDistFrom: [spawnX, spawnY, CONFIG.FLOWER_MIN_DIST_SPAWN],
+      test: (x, y) => dist(x, y, Boss.wx, Boss.wy) > CONFIG.BOSS_TRIGGER_RADIUS + 4,
+    });
+    flowers.push(makeFlower(t, p[0], p[1]));
+    placed.push(p);
+  }
+
+  /* --- CHESTS ------------------------------------------------------------- */
+  const chestSpots = [];
+  for (let i = 0; i < CONFIG.CHEST_COUNT; i++) {
+    const p = findOpenSpot({
+      clearance: 1.8, margin: 4,
+      avoid: chestSpots.concat(placed), minSep: CONFIG.CHEST_MIN_SEPARATION,
+      minDistFrom: [spawnX, spawnY, 8],
+      test: (x, y) => dist(x, y, Boss.wx, Boss.wy) > CONFIG.BOSS_TRIGGER_RADIUS + 3,
+    });
+    chestSpots.push(p);
+    chests.push(makeChest(p[0], p[1], CONFIG.CHEST_COST));
+  }
+
+  /* --- ENEMIES ------------------------------------------------------------
+     The map starts nearly empty. Everything else arrives in waves (see the
+     difficulty ramp in the simulation), so the opening is quiet enough to learn
+     the controls in and no swarm is ever waiting at your feet. */
+  const spawnEnemyAt = (kind) => {
+    const p = findOpenSpot({
+      clearance: 1.2, margin: 3,
+      minDistFrom: [spawnX, spawnY, CONFIG.START_MIN_DIST_SPAWN],
+    });
+    enemies.push(makeEnemy(kind, p[0], p[1]));
+  };
+  for (let i = 0; i < CONFIG.START_RUSHERS; i++) spawnEnemyAt('rusher');
+  for (let i = 0; i < CONFIG.START_SPITTERS; i++) spawnEnemyAt('spitter');
+
+  /* a small honour guard around the boss so a cold rush is punished by design */
+  for (let i = 0; i < CONFIG.BOSS_GUARD_COUNT; i++) {
+    const a = rndR(0, TAU), d = rndR(4.5, 7.5);
+    const x = clamp(Boss.wx + Math.cos(a) * d, 2, World.w - 2);
+    const y = clamp(Boss.wy + Math.sin(a) * d, 2, World.h - 2);
+    if (!circleHitsSolid(x, y, 0.6)) enemies.push(makeEnemy(i === 1 ? 'spitter' : 'rusher', x, y));
+  }
+
+  /* --- CLOCK -------------------------------------------------------------- */
+  Game.time = 0;
+  Game.timeLeft = CONFIG.LIGHT_SECONDS;
+  Game.dusk = false; Game.duskTimer = 0; Game.clearTime = 0;
+  respawnTimer = CONFIG.WAVE_FIRST_AT;
+
+  /* the wilted beacon you spawn at: the last ember of it, and a real foothold */
+  paintBloom(spawnX, spawnY, CONFIG.SPAWN_BLOOM_RADIUS, CONFIG.SPAWN_BLOOM_STRENGTH);
+  for (let i = 0; i < World.bloom.length; i++) World.bloom[i] = World.target[i];
+  recountBloom();
+  computeBloomCeiling();
+}
+
+let respawnTimer = 0;
+
+/* --- derived stats ------------------------------------------------------------ */
+function flowerLit(id) {
+  for (const f of flowers) if (f.type === id && f.bloomed) return true;
+  return false;
+}
+function recomputeStats() {
+  // items are permanent for the run: rebuilt from scratch, so this is idempotent
+  const t = { dmgMult: 1, rateMult: 1, speedMult: 1, pierce: CONFIG.BOLT_PIERCE, maxHp: CONFIG.PLAYER_MAX_HP };
+  for (const it of Player.items) it.apply(t);
+  if (flowerLit('buff')) { t.dmgMult *= CONFIG.BUFF_DAMAGE_MULT; t.rateMult *= CONFIG.BUFF_FIRERATE_MULT; }
+  Player.dmgMult  = t.dmgMult;
+  Player.rateMult = t.rateMult;
+  Player.speedMult = t.speedMult;
+  Player.pierce   = t.pierce;
+  Player.maxHp    = t.maxHp;
+  Player.hp = Math.min(Player.hp, Player.maxHp);
+}
+/* ============================================================================
+   SIMULATION
+   ========================================================================== */
+
+function updateGame(dt) {
+  if (Game.state !== STATE.PLAY) return;
+
+  /* --- clock ---------------------------------------------------------------
+     The dark rolls in over the last DUSK_WINDOW_SECONDS, not after the buzzer.
+     Unbloomed ground starts biting, bloomed ground holds — which is the payoff
+     for every beacon you opened — and the run still ends at exactly 0:00. */
+  Game.time += dt;
+  Game.timeLeft = CONFIG.LIGHT_SECONDS - Game.time;
+
+  const win = CONFIG.DUSK_WINDOW_SECONDS;
+  if (!Game.dusk && win > 0 && Game.timeLeft <= win) {
+    Game.dusk = true;
+    addShake(12);
+    Audio_.lose();
+    floatText(Player.wx, Player.wy - 1.4, 'THE LIGHT IS GOING', PAL.blood, 20);
+    showCard('THE LIGHT IS GOING', 'The dark is taking back everything you did not bloom',
+             ['bloomed ground still holds', 'stand in it or burn'], PAL.blood, null, null);
+  }
+  if (Game.dusk) {
+    duskReclaim = win > 0 ? clamp(1 - Game.timeLeft / win, 0, 1) : 1;
+    Game.duskTimer = win - Math.max(0, Game.timeLeft);
+    const onBloom = bloomAt(Player.wx, Player.wy) >= BLOOM_READ_THRESHOLD;
+    /* ramped by duskReclaim so the last seconds tighten rather than slam */
+    const dps = onBloom ? CONFIG.DUSK_BLOOMED_DPS : CONFIG.DUSK_DPS * duskReclaim;
+    if (dps > 0) damagePlayer(dps * dt, true);
+  }
+  if (Game.timeLeft <= 0) { endRun(false); return; }
+
+  updatePlayer(dt);
+  updateFlowers(dt);
+  updateChests(dt);
+  updateEnemies(dt);
+  updateBolts(dt);
+  updateEnemyBolts(dt);
+  updatePickups(dt);
+  updateBoss(dt);
+  updatePortal(dt);
+  updateBloomField(dt);
+  updateParticles(dt);
+  updateFloaters(dt);
+  updateCards(dt);
+  updateRespawn(dt);
+}
+
+/* ============================================================================
+   PLAYER
+   ========================================================================== */
+function updatePlayer(dt) {
+  const p = Player;
+  p.iframes = Math.max(0, p.iframes - dt);
+  p.hurtFlash = Math.max(0, p.hurtFlash - dt * 3.2);
+
+  /* movement — WASD, screen-relative so "W" is up the screen, not up the grid.
+     Game.intent is the headless-playtest override; null in a real browser run. */
+  let mx = 0, my = 0;
+  if (Game.intent) {
+    const n = normalize(Game.intent.mx, Game.intent.my);
+    mx = n[0]; my = n[1];
+  } else {
+    let ix = 0, iy = 0;
+    if (Input.key('w') || Input.key('arrowup'))    iy -= 1;
+    if (Input.key('s') || Input.key('arrowdown'))  iy += 1;
+    if (Input.key('a') || Input.key('arrowleft'))  ix -= 1;
+    if (Input.key('d') || Input.key('arrowright')) ix += 1;
+    const n = screenDirToWorld(ix, iy);
+    mx = n[0]; my = n[1];
+  }
+  const speed = CONFIG.PLAYER_SPEED * p.speedMult;
+  p.vx = mx * speed; p.vy = my * speed;
+  if (mx || my) p.bob += dt * 11; else p.bob = approach(p.bob, 0, 6, dt);
+  moveWithCollision(p, p.vx * dt, p.vy * dt);
+
+  /* aim — mouse position projected back onto the ground plane */
+  let ax, ay;
+  if (Game.intent) {
+    const n = normalize(Game.intent.ax, Game.intent.ay);
+    ax = n[0]; ay = n[1];
+  } else {
+    const w = screenToWorld(Input.mx, Input.my);
+    const n = normalize(w[0] - p.wx, w[1] - p.wy);
+    ax = n[0]; ay = n[1];
+  }
+  if (ax || ay) { p.aimX = ax; p.aimY = ay; }
+  p.facing = isoX(p.aimX, p.aimY) >= 0 ? 1 : -1;
+
+  /* fire — only while the button is held. Nothing shoots on its own. */
+  p.fireTimer -= dt;
+  const cd = CONFIG.BOLT_COOLDOWN / p.rateMult;
+  const wantsFire = Game.intent ? !!Game.intent.fire : Input.down;
+  p.firing = wantsFire;
+  if (wantsFire) {
+    if (p.fireTimer <= 0) {
+      p.fireTimer = cd;
+      fireBolt(p.wx, p.wy, p.aimX, p.aimY);
+    }
+  } else {
+    /* released: the next click fires immediately instead of waiting out a cooldown */
+    if (p.fireTimer < 0) p.fireTimer = 0;
+  }
+
+  /* economy + regen from lit beacons */
+  if (flowerLit('econ')) {
+    econAccum += CONFIG.ECON_PASSIVE_PER_SEC * dt;
+    while (econAccum >= 1) { econAccum -= 1; p.silver += 1; p.totalSilver += 1; }
+  }
+  if (flowerLit('heal') && p.hp < p.maxHp) {
+    p.hp = Math.min(p.maxHp, p.hp + CONFIG.HEAL_REGEN_PER_SEC * dt);
+  }
+}
+let econAccum = 0;
+
+function fireBolt(wx, wy, dx, dy) {
+  const off = CONFIG.BOLT_MUZZLE_OFFSET;
+  bolts.push({
+    wx: wx + dx * off, wy: wy + dy * off,
+    vx: dx * CONFIG.BOLT_SPEED, vy: dy * CONFIG.BOLT_SPEED,
+    life: CONFIG.BOLT_LIFE, dmg: CONFIG.BOLT_DAMAGE * Player.dmgMult,
+    pierce: Player.pierce, hit: [], r: CONFIG.BOLT_RADIUS, spin: rndR(0, TAU),
+  });
+  Audio_.shoot();
+}
+
+function damagePlayer(amount, ignoreIframes) {
+  const p = Player;
+  if (!ignoreIframes) {
+    if (p.iframes > 0) return;
+    p.iframes = CONFIG.PLAYER_IFRAMES;
+    addShake(CONFIG.SHAKE_HIT);
+    Audio_.hurt();
+    p.hurtFlash = 1;
+    floatText(p.wx, p.wy - 1.0, '-' + Math.round(amount), PAL.blood, 15);
+  }
+  p.hp -= amount;
+  if (p.hp <= 0) { p.hp = 0; endRun(false); }
+}
+
+/* ============================================================================
+   BEACON FLOWERS — hold-radius / hold-timer capture
+   ========================================================================== */
+function updateFlowers(dt) {
+  for (const f of flowers) {
+    f.sway += dt * 1.3;
+    if (f.bloomed) { f.bloomAnim = Math.min(1, f.bloomAnim + dt * 1.6); continue; }
+
+    const d = dist(Player.wx, Player.wy, f.wx, f.wy);
+    f.inRadius = d <= CONFIG.FLOWER_HOLD_RADIUS;
+
+    if (f.inRadius) {
+      f.progress += dt / CONFIG.FLOWER_HOLD_SECONDS;
+      if (rnd() < dt * 22) {
+        const a = rndR(0, TAU), rr = rndR(0.5, CONFIG.FLOWER_HOLD_RADIUS);
+        spawnParticle(f.wx + Math.cos(a) * rr, f.wy + Math.sin(a) * rr,
+          -Math.cos(a) * 2.4, -Math.sin(a) * 2.4, 0.55, 2.4, FLOWER_TYPES[f.type].petal);
+      }
+      if (f.progress >= 1) bloomFlower(f);
+    } else {
+      // FRAGILE #1: leaving the radius bleeds progress rather than hard-resetting.
+      f.progress = Math.max(0, f.progress - CONFIG.FLOWER_DECAY_PER_SEC * dt);
+    }
+  }
+}
+
+function bloomFlower(f) {
+  f.bloomed = true; f.progress = 1; f.bloomAnim = 0;
+  paintBloom(f.wx, f.wy, CONFIG.FLOWER_BLOOM_RADIUS, 1.0);
+  addShake(CONFIG.SHAKE_BLOOM);
+  Audio_.bloom();
+  const T = FLOWER_TYPES[f.type];
+  showCard(T.name, T.tag, flowerLines(f.type), T.petal, null, f.type);
+  floatText(f.wx, f.wy - 1.8, T.name + ' OPENS', T.petal, 18);
+  burst(f.wx, f.wy, 46, { color: T.petal, smin: 3, smax: 12, lmin: 0.5, lmax: 1.2, zmax: 6 });
+  burst(f.wx, f.wy, 18, { color: PAL.bloom, smin: 1, smax: 5, lmin: 0.8, lmax: 1.6 });
+  if (f.type === 'heal') {
+    Player.hp = Math.min(Player.maxHp, Player.hp + CONFIG.HEAL_INSTANT);
+    floatText(Player.wx, Player.wy - 1.2, '+' + CONFIG.HEAL_INSTANT, FLOWER_TYPES.heal.core, 16);
+  }
+  recomputeStats();
+}
+
+/* ============================================================================
+   CHESTS
+   ========================================================================== */
+function updateChests(dt) {
+  for (const c of chests) {
+    c.sway += dt;
+    if (c.opened) { c.openAnim = Math.min(1, c.openAnim + dt * 2.2); continue; }
+    const d = dist(Player.wx, Player.wy, c.wx, c.wy);
+    c.near = d <= CONFIG.CHEST_INTERACT_RADIUS;
+    const wants = Game.intent ? Game.intent.interact : Input.pressed('e');
+    if (c.near && wants && Player.silver >= c.cost) openChest(c);
+  }
+}
+
+let chestsOpened = 0;
+function openChest(c) {
+  Player.silver -= c.cost;
+  c.opened = true; c.openAnim = 0;
+  chestsOpened++;
+  // raise the price of every unopened cache
+  for (const o of chests) if (!o.opened) o.cost += CONFIG.CHEST_COST_ESCALATION;
+
+  // draw an item the player doesn't already have, if possible
+  const owned = new Set(Player.items.map(i => i.id));
+  const avail = ITEM_POOL.filter(i => !owned.has(i.id));
+  const item = avail.length ? rndPick(avail) : rndPick(ITEM_POOL);
+  c.item = item;
+  Player.items.push(item);
+  recomputeStats();
+  if (item.heal) Player.hp = Math.min(Player.maxHp, Player.hp + item.heal);
+
+  Audio_.chest();
+  addShake(7);
+  showCard(item.name, item.desc, [item.stat], PAL.bloom, item.id, null);
+  floatText(c.wx, c.wy - 1.6, item.name, PAL.bloom, 17);
+  burst(c.wx, c.wy, 34, { color: '#E8D98B', smin: 2, smax: 9, lmin: 0.5, lmax: 1.1 });
+}
+
+/* ============================================================================
+   ENEMIES
+   ========================================================================== */
+function updateEnemies(dt) {
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    e.t += dt; e.wob += dt;
+    e.hitFlash = Math.max(0, e.hitFlash - dt * 5);
+    e.touchCd = Math.max(0, e.touchCd - dt);
+    e.spawnGrace = Math.max(0, e.spawnGrace - dt);
+
+    const d = dist(e.wx, e.wy, Player.wx, Player.wy);
+    const aggro = d < CONFIG.ENEMY_AGGRO_RANGE;
+    const [tx, ty] = normalize(Player.wx - e.wx, Player.wy - e.wy);
+
+    if (e.kind === 'rusher') {
+      /* melee rusher: closes, plants for a visible beat, THEN lunges. The
+         wind-up is what makes the lunge dodgeable instead of a teleport. */
+      e.lungeCd -= dt;
+      if (e.windup > 0) {
+        e.windup -= dt;
+        if (e.windup <= 0) { e.lunge = CONFIG.RUSHER_LUNGE_TIME; e.dirX = tx; e.dirY = ty; }
+      } else if (e.lunge > 0) {
+        e.lunge -= dt;
+        moveWithCollision(e, e.dirX * e.speed * CONFIG.RUSHER_LUNGE_MULT * dt,
+                             e.dirY * e.speed * CONFIG.RUSHER_LUNGE_MULT * dt);
+        if (rnd() < dt * 14) spawnParticle(e.wx, e.wy, rndR(-1, 1), rndR(-1, 1), 0.3, 2, PAL.blood, true);
+      } else if (aggro) {
+        if (d < CONFIG.RUSHER_LUNGE_RANGE && e.lungeCd <= 0) {
+          e.windup = CONFIG.RUSHER_LUNGE_TELEGRAPH;
+          e.lungeCd = rndR(2.0, 3.2);
+        } else {
+          moveWithCollision(e, tx * e.speed * dt, ty * e.speed * dt);
+        }
+      } else {
+        wander(e, dt, 0.45);
+      }
+
+    } else if (e.kind === 'spitter') {
+      /* ranged: keeps its distance, only fires with line of sight */
+      e.shotCd -= dt;
+      if (aggro) {
+        const want = CONFIG.SPITTER_KEEP_DIST;
+        const push = d < want - 0.6 ? -1 : (d > want + 1.2 ? 1 : 0);
+        const strafe = Math.sin(e.t * 1.1 + e.wob) * 0.55;
+        moveWithCollision(e,
+          (tx * push + -ty * strafe) * e.speed * dt,
+          (ty * push +  tx * strafe) * e.speed * dt);
+        if (e.shotCd <= 0 && d < CONFIG.SPITTER_RANGE && hasLOS(e.wx, e.wy, Player.wx, Player.wy)) {
+          e.shotCd = CONFIG.SPITTER_SHOT_COOLDOWN;
+          enemyBolts.push({
+            wx: e.wx, wy: e.wy,
+            vx: tx * CONFIG.SPITTER_SHOT_SPEED, vy: ty * CONFIG.SPITTER_SHOT_SPEED,
+            life: 2.4, dmg: CONFIG.SPITTER_SHOT_DAMAGE, r: 0.34, spin: 0, kind: 'spit',
+          });
+          Audio_.blip(300, 0.09, 'sawtooth', 0.05, 0.6);
+        }
+      } else {
+        wander(e, dt, 0.3);
+      }
+
+    } else { /* mite — swarm: circles at a standoff, darts in, then peels away.
+                It must never park on top of the player: at point-blank it is
+                behind the muzzle and effectively unhittable. */
+      e.orbit += dt * e.orbitDir * 2.0;
+      e.dartCd -= dt;
+      if (e.retreat > 0) {
+        e.retreat -= dt;
+        const sp = e.speed * CONFIG.MITE_RETREAT_MULT;
+        const jx = Math.cos(e.orbit) * 0.5, jy = Math.sin(e.orbit) * 0.5;
+        const [ux, uy] = normalize(-tx + jx, -ty + jy);
+        moveWithCollision(e, ux * sp * dt, uy * sp * dt);
+      } else if (e.darting > 0) {
+        e.darting -= dt;
+        moveWithCollision(e, tx * e.speed * 1.35 * dt, ty * e.speed * 1.35 * dt);
+      } else if (aggro) {
+        const stand = CONFIG.MITE_STANDOFF + Player.r;
+        if (d < stand + 0.6 && e.dartCd <= 0) {
+          e.darting = 0.45; e.dartCd = CONFIG.MITE_DART_COOLDOWN;
+        } else {
+          /* hold the ring: close only to the standoff, and strafe around it */
+          const radial = d > stand + 0.3 ? 1 : (d < stand - 0.3 ? -1 : 0);
+          const strafe = Math.sin(e.orbit) * CONFIG.MITE_ORBIT_JITTER * 0.4 + e.orbitDir * 0.7;
+          const [ux, uy] = normalize(tx * radial + -ty * strafe, ty * radial + tx * strafe);
+          moveWithCollision(e, ux * e.speed * dt, uy * e.speed * dt);
+        }
+      } else {
+        wander(e, dt, 0.6);
+      }
+    }
+
+    /* contact damage */
+    const touchR = e.r + Player.r;
+    if (d < touchR && e.touchCd <= 0 && e.spawnGrace <= 0) {
+      e.touchCd = 0.6;
+      const dmg = e.kind === 'rusher' ? CONFIG.RUSHER_DAMAGE : e.kind === 'mite' ? CONFIG.MITE_DAMAGE : 8;
+      damagePlayer(dmg, false);
+      if (e.kind === 'rusher') e.lunge = 0;
+      /* it landed its hit — now get off the player so it can be shot */
+      if (e.kind === 'mite') { e.darting = 0; e.retreat = CONFIG.MITE_RETREAT_TIME; }
+    }
+
+    if (e.dead) enemies.splice(i, 1);
+  }
+}
+
+function wander(e, dt, scale) {
+  const a = e.wob * 0.7 + e.t * 0.3;
+  moveWithCollision(e, Math.cos(a) * e.speed * scale * dt, Math.sin(a) * e.speed * scale * dt);
+}
+
+function killEnemy(e, idx) {
+  e.dead = true;
+  Audio_.kill();
+  addHitstop(CONFIG.HITSTOP_ON_KILL);
+  const base = e.kind === 'rusher' ? CONFIG.RUSHER_DROP : e.kind === 'spitter' ? CONFIG.SPITTER_DROP : CONFIG.MITE_DROP;
+  const mult = flowerLit('econ') ? CONFIG.ECON_DROP_MULT : 1;
+  const n = Math.max(1, Math.round(base * mult));
+  for (let i = 0; i < n; i++) pickups.push(makePickup(e.wx, e.wy, 1));
+  burst(e.wx, e.wy, e.kind === 'mite' ? 6 : 16, { color: PAL.blood, smin: 2, smax: 7, lmin: 0.2, lmax: 0.5 });
+  burst(e.wx, e.wy, 4, { color: PAL.bloom, smin: 1, smax: 4, lmin: 0.4, lmax: 0.8 });
+  if (idx !== undefined) enemies.splice(idx, 1);
+}
+
+/* ============================================================================
+   DIFFICULTY RAMP — waves, not a map that starts full
+   The run opens with a handful of rushers out in the dark. Waves begin after
+   WAVE_FIRST_AT, grow in size, arrive more often, and unlock enemy kinds on a
+   clock so the player meets one new thing at a time.
+   ========================================================================== */
+function waveInterval(t) {
+  return Math.max(CONFIG.WAVE_INTERVAL_MIN,
+                  CONFIG.WAVE_INTERVAL - t * CONFIG.WAVE_INTERVAL_DECAY);
+}
+function waveSize(t) {
+  return Math.min(CONFIG.WAVE_SIZE_MAX,
+                  Math.round(CONFIG.WAVE_SIZE_BASE + t * CONFIG.WAVE_SIZE_PER_SEC));
+}
+function enemyCap(t) {
+  return Math.min(CONFIG.ENEMY_CAP_MAX,
+                  Math.round(CONFIG.ENEMY_CAP_BASE + t * CONFIG.ENEMY_CAP_PER_SEC));
+}
+function unlockedKinds(t) {
+  const k = ['rusher'];
+  if (t >= CONFIG.SPITTER_UNLOCK_AT) k.push('spitter');
+  if (t >= CONFIG.MITE_UNLOCK_AT) k.push('mite');
+  return k;
+}
+
+function spawnWave() {
+  const t = Game.time;
+  const cap = enemyCap(t);
+  let budget = Math.min(waveSize(t), Math.max(0, cap - enemies.length));
+  if (budget <= 0) return;
+
+  const kinds = unlockedKinds(t);
+  while (budget > 0) {
+    const kind = rndPick(kinds);
+    const spot = findOpenSpot({
+      clearance: 1.2, margin: 3,
+      minDistFrom: [Player.wx, Player.wy, CONFIG.SPAWN_MIN_DIST_PLAYER],
+      maxDistFrom: [Player.wx, Player.wy, CONFIG.SPAWN_MAX_DIST_PLAYER],
+    });
+    if (kind === 'mite') {
+      /* mites only ever arrive as a small cluster — one alone reads as noise */
+      const n = Math.min(budget, CONFIG.MITE_PER_CLUSTER);
+      for (let i = 0; i < n; i++) {
+        const a = rndR(0, TAU), r = rndR(0.5, 2.0);
+        const x = clamp(spot[0] + Math.cos(a) * r, 1.5, World.w - 1.5);
+        const y = clamp(spot[1] + Math.sin(a) * r, 1.5, World.h - 1.5);
+        if (circleHitsSolid(x, y, CONFIG.MITE_RADIUS)) continue;
+        enemies.push(makeEnemy('mite', x, y));
+      }
+      budget -= n;
+    } else {
+      enemies.push(makeEnemy(kind, spot[0], spot[1]));
+      budget -= 1;
+    }
+  }
+}
+
+function updateRespawn(dt) {
+  if (Game.dusk) return;
+  respawnTimer -= dt;
+  if (respawnTimer > 0) return;
+  respawnTimer = waveInterval(Game.time);
+  spawnWave();
+}
+
+/* ============================================================================
+   PROJECTILES
+   ========================================================================== */
+/* Bolts move ~0.4 tiles per frame — further than a mite is wide. Stepping the
+   whole distance at once let small, close enemies pass straight through the
+   bolt between frames, which is why a swarm sitting on you felt unkillable.
+   Each bolt now walks its travel in sub-steps and tests collision at each. */
+function updateBolts(dt) {
+  for (let i = bolts.length - 1; i >= 0; i--) {
+    const b = bolts[i];
+    b.life -= dt; b.spin += dt * 18;
+    if (b.life <= 0) { bolts.splice(i, 1); continue; }
+
+    const travel = Math.hypot(b.vx, b.vy) * dt;
+    const steps = Math.max(1, Math.ceil(travel / CONFIG.BOLT_STEP_MAX));
+    const sdt = dt / steps;
+    let dead = false;
+
+    for (let s = 0; s < steps && !dead; s++) {
+      b.wx += b.vx * sdt; b.wy += b.vy * sdt;
+
+      if (isSolid(b.wx, b.wy)) {
+        burst(b.wx, b.wy, 4, { color: PAL.bloom, smin: 1, smax: 3, lmin: 0.1, lmax: 0.3 });
+        dead = true; break;
+      }
+
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (b.hit.indexOf(e) >= 0) continue;
+        const rr = b.r + e.r;
+        if (dist2(b.wx, b.wy, e.wx, e.wy) < rr * rr) {
+          e.hp -= b.dmg; e.hitFlash = 1;
+          if (e.kind === 'mite') { e.retreat = CONFIG.MITE_RETREAT_TIME; }
+          Audio_.hit();
+          burst(b.wx, b.wy, 5, { color: PAL.bone, smin: 2, smax: 6, lmin: 0.1, lmax: 0.3 });
+          if (e.hp <= 0) killEnemy(e, j);
+          b.hit.push(e);
+          if (b.pierce > 0) b.pierce--; else dead = true;
+          break;
+        }
+      }
+      if (dead) break;
+
+      /* boss — only takes damage once it has been forced awake */
+      if (!Boss.dead && Boss.active) {
+        const rr = b.r + Boss.r;
+        if (dist2(b.wx, b.wy, Boss.wx, Boss.wy) < rr * rr) {
+          damageBoss(b.dmg, b.wx, b.wy);
+          dead = true; break;
+        }
+      }
+    }
+
+    if (dead) { bolts.splice(i, 1); continue; }
+    if (rnd() < dt * 30) spawnParticle(b.wx, b.wy, rndR(-.6, .6), rndR(-.6, .6), 0.22, 1.8, PAL.bloom);
+  }
+}
+
+function updateEnemyBolts(dt) {
+  for (let i = enemyBolts.length - 1; i >= 0; i--) {
+    const b = enemyBolts[i];
+    b.life -= dt; b.spin += dt * 9;
+    if (b.life <= 0) { enemyBolts.splice(i, 1); continue; }
+    b.wx += b.vx * dt; b.wy += b.vy * dt;
+    if (isSolid(b.wx, b.wy)) { enemyBolts.splice(i, 1); continue; }
+    if (b.kind === 'petal' && rnd() < dt * 18) {
+      spawnParticle(b.wx, b.wy, 0, 0, 0.28, 2.0, PAL.accent);
+    }
+    if (dist2(b.wx, b.wy, Player.wx, Player.wy) < (b.r + Player.r) * (b.r + Player.r)) {
+      damagePlayer(b.dmg, false);
+      burst(b.wx, b.wy, 6, { color: b.kind === 'petal' ? PAL.accent : PAL.blood, smin: 2, smax: 6, lmin: 0.15, lmax: 0.35 });
+      enemyBolts.splice(i, 1);
+    }
+  }
+}
+
+function updatePickups(dt) {
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    const p = pickups[i];
+    p.life -= dt; p.spin += dt * 3;
+    if (p.life <= 0) { pickups.splice(i, 1); continue; }
+    const d = dist(p.wx, p.wy, Player.wx, Player.wy);
+    if (d < 3.4) {
+      const [ux, uy] = normalize(Player.wx - p.wx, Player.wy - p.wy);
+      const pull = 13 * (1 - d / 3.4) + 3;
+      p.vx = lerp(p.vx, ux * pull, 0.24); p.vy = lerp(p.vy, uy * pull, 0.24);
+      p.pulled = true;
+    } else {
+      p.vx *= Math.pow(0.06, dt); p.vy *= Math.pow(0.06, dt);
+    }
+    p.wx += p.vx * dt; p.wy += p.vy * dt;
+    if (d < 0.7) {
+      Player.silver += p.value; Player.totalSilver += p.value;
+      Audio_.coin();
+      spawnParticle(p.wx, p.wy, 0, -2, 0.35, 2.4, '#E8D98B');
+      pickups.splice(i, 1);
+    }
+  }
+}
+
+/* ============================================================================
+   BOSS BLOOM
+   ========================================================================== */
+function updateBoss(dt) {
+  const B = Boss;
+  B.sway += dt;
+  B.hitFlash = Math.max(0, B.hitFlash - dt * 4);
+
+  if (B.dead) { B.deathAnim = Math.min(1, B.deathAnim + dt * 0.7); return; }
+
+  const d = dist(Player.wx, Player.wy, B.wx, B.wy);
+
+  /* --- activation charge-up: cannot be triggered by walking past ---------- */
+  if (!B.active) {
+    if (d <= CONFIG.BOSS_TRIGGER_RADIUS) {
+      const was = B.charge;
+      B.charge = Math.min(1, B.charge + dt / CONFIG.BOSS_CHARGE_SECONDS);
+      if (was < 0.02 && B.charge >= 0.02) Audio_.charge();
+      if (rnd() < dt * 26) {
+        const a = rndR(0, TAU), rr = rndR(1, CONFIG.BOSS_TRIGGER_RADIUS);
+        spawnParticle(B.wx + Math.cos(a) * rr, B.wy + Math.sin(a) * rr,
+          -Math.cos(a) * 3.2, -Math.sin(a) * 3.2, 0.5, 2.6, PAL.accent);
+      }
+      if (B.charge >= 1) {
+        B.active = true;
+        addShake(16);
+        Audio_.blip(120, 0.9, 'sawtooth', 0.18, 5.0);
+        floatText(B.wx, B.wy - 3.2, 'THE BOSS BLOOM WAKES', PAL.accent, 20);
+        burst(B.wx, B.wy, 40, { color: PAL.accent, smin: 4, smax: 13, lmin: 0.5, lmax: 1.1 });
+      }
+    } else {
+      B.charge = Math.max(0, B.charge - CONFIG.BOSS_CHARGE_DECAY * dt / CONFIG.BOSS_CHARGE_SECONDS);
+    }
+    B.openness = approach(B.openness, B.charge * 0.35, 5, dt);
+    return;
+  }
+
+  B.openness = approach(B.openness, 1, 3.2, dt);
+  const frac = B.hp / B.maxHp;
+  if (!B.enraged && frac <= CONFIG.BOSS_ENRAGE_AT) {
+    B.enraged = true;
+    addShake(12);
+    floatText(B.wx, B.wy - 3.0, 'IT REFUSES TO WILT', PAL.accent, 18);
+  }
+  const cdMult = B.enraged ? CONFIG.BOSS_ENRAGE_MULT : 1;
+
+  /* contact */
+  if (d < B.r + Player.r + 0.2) damagePlayer(CONFIG.BOSS_CONTACT_DAMAGE, false);
+
+  /* --- attack: radial petal barrage -------------------------------------- */
+  B.barrageCd -= dt;
+  if (B.barrageCd <= 0) {
+    B.barrageCd = CONFIG.BOSS_BARRAGE_COOLDOWN * cdMult;
+    const n = CONFIG.BOSS_BARRAGE_PETALS + (B.enraged ? 4 : 0);
+    const off = rndR(0, TAU);
+    for (let i = 0; i < n; i++) {
+      const a = off + (i / n) * TAU;
+      enemyBolts.push({
+        wx: B.wx + Math.cos(a) * B.r, wy: B.wy + Math.sin(a) * B.r,
+        vx: Math.cos(a) * CONFIG.BOSS_BARRAGE_SPEED, vy: Math.sin(a) * CONFIG.BOSS_BARRAGE_SPEED,
+        life: 3.0, dmg: CONFIG.BOSS_BARRAGE_DAMAGE, r: 0.38, spin: a, kind: 'petal',
+      });
+    }
+    Audio_.blip(420, 0.22, 'sine', 0.08, 0.5);
+    burst(B.wx, B.wy, 12, { color: PAL.accent, smin: 3, smax: 8, lmin: 0.2, lmax: 0.5 });
+  }
+
+  /* --- attack: rotating light-lash --------------------------------------- */
+  B.sweepCd -= dt;
+  if (B.sweepState === 0 && B.sweepCd <= 0) {
+    B.sweepState = 1; B.sweepT = 0;
+    B.sweepAngle = Math.atan2(Player.wy - B.wy, Player.wx - B.wx) - CONFIG.BOSS_SWEEP_ARC * 2;
+    B.sweepDir = rndSign();
+    Audio_.blip(200, 0.7, 'sawtooth', 0.07, 2.4);
+  }
+  if (B.sweepState === 1) {
+    B.sweepT += dt;
+    if (B.sweepT >= CONFIG.BOSS_SWEEP_WINDUP) { B.sweepState = 2; B.sweepT = 0; }
+  } else if (B.sweepState === 2) {
+    B.sweepT += dt;
+    B.sweepAngle += B.sweepDir * (TAU * 0.55) * dt;
+    const dp = dist(Player.wx, Player.wy, B.wx, B.wy);
+    if (dp < CONFIG.BOSS_SWEEP_LENGTH) {
+      let pa = Math.atan2(Player.wy - B.wy, Player.wx - B.wx);
+      let da = Math.atan2(Math.sin(pa - B.sweepAngle), Math.cos(pa - B.sweepAngle));
+      if (Math.abs(da) < CONFIG.BOSS_SWEEP_ARC * 0.5) damagePlayer(CONFIG.BOSS_SWEEP_DAMAGE, false);
+    }
+    if (B.sweepT >= CONFIG.BOSS_SWEEP_DURATION) {
+      B.sweepState = 0; B.sweepCd = CONFIG.BOSS_SWEEP_COOLDOWN * cdMult;
+    }
+  }
+
+  /* --- attack: spit seed-mites -------------------------------------------- */
+  B.seedCd -= dt;
+  if (B.seedCd <= 0) {
+    B.seedCd = CONFIG.BOSS_SEED_COOLDOWN * cdMult;
+    for (let i = 0; i < CONFIG.BOSS_SEED_COUNT; i++) {
+      const a = rndR(0, TAU), r = rndR(2.2, 3.6);
+      const x = clamp(B.wx + Math.cos(a) * r, 1.5, World.w - 1.5);
+      const y = clamp(B.wy + Math.sin(a) * r, 1.5, World.h - 1.5);
+      if (circleHitsSolid(x, y, CONFIG.MITE_RADIUS)) continue;
+      enemies.push(makeEnemy('mite', x, y));
+      burst(x, y, 6, { color: PAL.accent, smin: 2, smax: 5, lmin: 0.2, lmax: 0.4 });
+    }
+  }
+}
+
+function damageBoss(dmg, hx, hy) {
+  const B = Boss;
+  B.hp -= dmg; B.hitFlash = 1;
+  Audio_.bossHurt();
+  burst(hx, hy, 5, { color: PAL.accent, smin: 2, smax: 6, lmin: 0.1, lmax: 0.3 });
+  if (B.hp <= 0) killBoss();
+}
+
+function killBoss() {
+  const B = Boss;
+  B.hp = 0; B.dead = true; B.deathAnim = 0;
+  addShake(CONFIG.SHAKE_BOSS_DEATH);
+  addHitstop(0.20);
+  Audio_.bossDie();
+  floatText(B.wx, B.wy - 3.4, 'IT BLOOMS', PAL.accent, 26);
+  burst(B.wx, B.wy, 90, { color: PAL.accent, smin: 4, smax: 18, lmin: 0.7, lmax: 1.8, zmax: 9 });
+  burst(B.wx, B.wy, 60, { color: PAL.bloom, smin: 2, smax: 12, lmin: 0.9, lmax: 2.2, zmax: 7 });
+  /* the boss's own light floods the ground it was strangling */
+  paintBloom(B.wx, B.wy, CONFIG.BOSS_BLOOM_RADIUS, 1.0);
+  /* the portal does not fade in — it blooms into existence */
+  Portal.exists = true; Portal.anim = 0;
+  Portal.wx = B.wx; Portal.wy = B.wy;
+  setTimeout(() => Audio_.portal(), 400);
+}
+
+function updatePortal(dt) {
+  if (!Portal.exists) return;
+  Portal.anim = Math.min(1, Portal.anim + dt / CONFIG.PORTAL_BLOOM_SECONDS);
+  if (rnd() < dt * 30) {
+    const a = rndR(0, TAU), r = rndR(0.4, CONFIG.PORTAL_RADIUS * 1.3);
+    spawnParticle(Portal.wx + Math.cos(a) * r, Portal.wy + Math.sin(a) * r,
+      -Math.cos(a) * 1.6, -Math.sin(a) * 1.6, 0.8, 2.6, rnd() < 0.5 ? PAL.accent : PAL.bloom);
+  }
+  if (Portal.anim >= 1 && dist(Player.wx, Player.wy, Portal.wx, Portal.wy) < CONFIG.PORTAL_RADIUS) {
+    endRun(true);
+  }
+}
+
+/* ============================================================================
+   RUN END
+   ========================================================================== */
+function endRun(won) {
+  if (Game.state !== STATE.PLAY) return;
+  Game.clearTime = Game.time;
+  /* why the run ended — the end card should teach, not just announce */
+  if (!won) {
+    const nearBoss = dist(Player.wx, Player.wy, Boss.wx, Boss.wy) < CONFIG.BOSS_TRIGGER_RADIUS + 3;
+    const lit = flowers.filter(f => f.bloomed).length;
+    if (Game.dusk)                       Game.deathContext = 'dusk';
+    else if (Boss.dead)                  Game.deathContext = 'afterBoss';
+    else if (Boss.active)                Game.deathContext = 'bossFight';
+    else if (nearBoss || Boss.charge > 0) Game.deathContext = 'charge';
+    else if (lit === 0)                  Game.deathContext = 'cold';
+    else                                 Game.deathContext = 'route';
+  }
+  Game.state = won ? STATE.WIN : STATE.LOSE;
+  Game.runs++;
+  if (won) {
+    Audio_.win();
+    addShake(18);
+    if (Game.best === null || Game.clearTime < Game.best) Game.best = Game.clearTime;
+  } else if (!Game.dusk) {
+    Audio_.lose();
+  }
+}
+/* ============================================================================
+   DUSKPETAL 3D — matrix maths and a thin WebGL2 layer
+
+   No Three.js, no CDN, no build step. The whole renderer is in this file and
+   the three that follow, so duskpetal3d.html stays a single file that opens
+   from disk with no network at all.
+   ========================================================================== */
+
+/* --- mat4, column-major to match WebGL -------------------------------------- */
+function m4() { return new Float32Array(16); }
+function m4identity(o) {
+  o[0]=1;o[1]=0;o[2]=0;o[3]=0; o[4]=0;o[5]=1;o[6]=0;o[7]=0;
+  o[8]=0;o[9]=0;o[10]=1;o[11]=0; o[12]=0;o[13]=0;o[14]=0;o[15]=1; return o;
+}
+function m4mul(o, a, b) {
+  const a00=a[0],a01=a[1],a02=a[2],a03=a[3], a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+        a20=a[8],a21=a[9],a22=a[10],a23=a[11], a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+  for (let i = 0; i < 4; i++) {
+    const b0=b[i*4],b1=b[i*4+1],b2=b[i*4+2],b3=b[i*4+3];
+    o[i*4]   = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+    o[i*4+1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+    o[i*4+2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+    o[i*4+3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  }
+  return o;
+}
+function m4perspective(o, fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+  o[0]=f/aspect;o[1]=0;o[2]=0;o[3]=0;
+  o[4]=0;o[5]=f;o[6]=0;o[7]=0;
+  o[8]=0;o[9]=0;o[10]=(far+near)*nf;o[11]=-1;
+  o[12]=0;o[13]=0;o[14]=2*far*near*nf;o[15]=0;
+  return o;
+}
+function m4lookAt(o, ex, ey, ez, cx, cy, cz, ux, uy, uz) {
+  let zx = ex-cx, zy = ey-cy, zz = ez-cz;
+  let l = Math.hypot(zx,zy,zz) || 1; zx/=l; zy/=l; zz/=l;
+  let xx = uy*zz - uz*zy, xy = uz*zx - ux*zz, xz = ux*zy - uy*zx;
+  l = Math.hypot(xx,xy,xz) || 1; xx/=l; xy/=l; xz/=l;
+  const yx = zy*xz - zz*xy, yy = zz*xx - zx*xz, yz = zx*xy - zy*xx;
+  o[0]=xx;o[1]=yx;o[2]=zx;o[3]=0;
+  o[4]=xy;o[5]=yy;o[6]=zy;o[7]=0;
+  o[8]=xz;o[9]=yz;o[10]=zz;o[11]=0;
+  o[12]=-(xx*ex+xy*ey+xz*ez);
+  o[13]=-(yx*ex+yy*ey+yz*ez);
+  o[14]=-(zx*ex+zy*ey+zz*ez);
+  o[15]=1;
+  return o;
+}
+/* translate * rotateY * rotateX * rotateZ * scale — enough for every prop here */
+function m4trs(o, px, py, pz, ry, rx, rz, sx, sy, sz) {
+  const cy=Math.cos(ry), sy_=Math.sin(ry);
+  const cx=Math.cos(rx), sxr=Math.sin(rx);
+  const cz=Math.cos(rz), szr=Math.sin(rz);
+  /* R = Ry * Rx * Rz */
+  const r00 = cy*cz + sy_*sxr*szr, r01 = -cy*szr + sy_*sxr*cz, r02 = sy_*cx;
+  const r10 = cx*szr,              r11 = cx*cz,                r12 = -sxr;
+  const r20 = -sy_*cz + cy*sxr*szr,r21 = sy_*szr + cy*sxr*cz,  r22 = cy*cx;
+  o[0]=r00*sx; o[1]=r10*sx; o[2]=r20*sx; o[3]=0;
+  o[4]=r01*sy; o[5]=r11*sy; o[6]=r21*sy; o[7]=0;
+  o[8]=r02*sz; o[9]=r12*sz; o[10]=r22*sz; o[11]=0;
+  o[12]=px; o[13]=py; o[14]=pz; o[15]=1;
+  return o;
+}
+function m4project(m, x, y, z) {
+  const w = m[3]*x + m[7]*y + m[11]*z + m[15];
+  return [
+    (m[0]*x + m[4]*y + m[8]*z + m[12]) / w,
+    (m[1]*x + m[5]*y + m[9]*z + m[13]) / w,
+    (m[2]*x + m[6]*y + m[10]*z + m[14]) / w,
+    w,
+  ];
+}
+
+/* --- GL helpers -------------------------------------------------------------- */
+let gl = null;
+
+function glCompile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error('shader: ' + gl.getShaderInfoLog(s) + '\n' + src);
+  }
+  return s;
+}
+function glProgram(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, glCompile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, glCompile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error('link: ' + gl.getProgramInfoLog(p));
+  }
+  const u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) {
+    const info = gl.getActiveUniform(p, i);
+    const name = info.name.replace(/\[0\]$/, '');
+    u[name] = gl.getUniformLocation(p, name);
+  }
+  return { prog: p, u };
+}
+
+/* Per-instance layout: mat4 (16) + colour (3) + emissive (3) = 22 floats. */
+const INSTANCE_FLOATS = 22;
+
+/* A drawable: one static geometry drawn many times with per-instance data. */
+function makeBatch(geo) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, geo.verts, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);                                   // aPos
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(1);                                   // aNormal
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+
+  const ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, ibo);
+  const stride = INSTANCE_FLOATS * 4;
+  for (let i = 0; i < 4; i++) {                                    // iMat columns
+    gl.enableVertexAttribArray(2 + i);
+    gl.vertexAttribPointer(2 + i, 4, gl.FLOAT, false, stride, i * 16);
+    gl.vertexAttribDivisor(2 + i, 1);
+  }
+  gl.enableVertexAttribArray(6);                                   // iColor
+  gl.vertexAttribPointer(6, 3, gl.FLOAT, false, stride, 64);
+  gl.vertexAttribDivisor(6, 1);
+  gl.enableVertexAttribArray(7);                                   // iEmissive
+  gl.vertexAttribPointer(7, 3, gl.FLOAT, false, stride, 76);
+  gl.vertexAttribDivisor(7, 1);
+
+  gl.bindVertexArray(null);
+  return {
+    vao, vbo, ibo, count: geo.count,
+    data: new Float32Array(INSTANCE_FLOATS * 64),
+    n: 0,
+    capacity: 64,
+  };
+}
+
+function batchReset(b) { b.n = 0; }
+
+/* push one instance; grows the CPU-side buffer as needed */
+function batchPush(b, mat, cr, cg, cb, er, eg, eb) {
+  if (b.n >= b.capacity) {
+    b.capacity *= 2;
+    const nd = new Float32Array(INSTANCE_FLOATS * b.capacity);
+    nd.set(b.data);
+    b.data = nd;
+  }
+  const o = b.n * INSTANCE_FLOATS;
+  b.data.set(mat, o);
+  b.data[o+16]=cr; b.data[o+17]=cg; b.data[o+18]=cb;
+  b.data[o+19]=er; b.data[o+20]=eg; b.data[o+21]=eb;
+  b.n++;
+}
+
+function batchDraw(b) {
+  if (b.n === 0) return;
+  gl.bindVertexArray(b.vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, b.ibo);
+  gl.bufferData(gl.ARRAY_BUFFER, b.data.subarray(0, b.n * INSTANCE_FLOATS), gl.DYNAMIC_DRAW);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, b.count, b.n);
+  gl.bindVertexArray(null);
+}
+/* ============================================================================
+   GEOMETRY — every mesh generated in code. No assets, no loaders.
+   Each returns { verts: Float32Array(pos3 + normal3 interleaved), count }.
+   ========================================================================== */
+
+function geoFromTris(tris) {
+  const verts = new Float32Array(tris.length * 6);
+  for (let i = 0; i < tris.length; i++) {
+    const t = tris[i];
+    verts.set(t, i * 6);
+  }
+  return { verts, count: tris.length };
+}
+
+/* push a triangle with a computed flat normal — flat shading suits the
+   stylized/graphic art direction far better than smooth normals */
+function pushTri(out, ax, ay, az, bx, by, bz, cx, cy, cz) {
+  const ux = bx-ax, uy = by-ay, uz = bz-az;
+  const vx = cx-ax, vy = cy-ay, vz = cz-az;
+  let nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+  const l = Math.hypot(nx, ny, nz) || 1; nx/=l; ny/=l; nz/=l;
+  out.push([ax,ay,az,nx,ny,nz], [bx,by,bz,nx,ny,nz], [cx,cy,cz,nx,ny,nz]);
+}
+function pushQuad(out, a, b, c, d) {
+  pushTri(out, a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+  pushTri(out, a[0],a[1],a[2], c[0],c[1],c[2], d[0],d[1],d[2]);
+}
+
+/* unit box, centred on X/Z, sitting on Y=0 (so scaling grows it upward) */
+function geoBox() {
+  const t = [];
+  const h = 0.5;
+  const p = [
+    [-h,0,-h],[h,0,-h],[h,0,h],[-h,0,h],
+    [-h,1,-h],[h,1,-h],[h,1,h],[-h,1,h],
+  ];
+  pushQuad(t, p[4],p[5],p[6],p[7]);            // top
+  pushQuad(t, p[3],p[2],p[1],p[0]);            // bottom
+  pushQuad(t, p[0],p[1],p[5],p[4]);            // -z
+  pushQuad(t, p[2],p[3],p[7],p[6]);            // +z
+  pushQuad(t, p[1],p[2],p[6],p[5]);            // +x
+  pushQuad(t, p[3],p[0],p[4],p[7]);            // -x
+  return geoFromTris(t);
+}
+
+/* cylinder of radius 0.5 from Y=0 to Y=1 */
+function geoCylinder(seg) {
+  const t = [], n = seg || 10, r = 0.5;
+  for (let i = 0; i < n; i++) {
+    const a0 = (i/n)*TAU, a1 = ((i+1)/n)*TAU;
+    const x0=Math.cos(a0)*r, z0=Math.sin(a0)*r, x1=Math.cos(a1)*r, z1=Math.sin(a1)*r;
+    pushQuad(t, [x0,0,z0],[x1,0,z1],[x1,1,z1],[x0,1,z0]);
+    pushTri(t, 0,1,0, x0,1,z0, x1,1,z1);
+    pushTri(t, 0,0,0, x1,0,z1, x0,0,z0);
+  }
+  return geoFromTris(t);
+}
+
+/* cone, base radius 0.5 at Y=0, apex at Y=1 */
+function geoCone(seg) {
+  const t = [], n = seg || 8, r = 0.5;
+  for (let i = 0; i < n; i++) {
+    const a0 = (i/n)*TAU, a1 = ((i+1)/n)*TAU;
+    const x0=Math.cos(a0)*r, z0=Math.sin(a0)*r, x1=Math.cos(a1)*r, z1=Math.sin(a1)*r;
+    pushTri(t, x0,0,z0, x1,0,z1, 0,1,0);
+    pushTri(t, 0,0,0, x1,0,z1, x0,0,z0);
+  }
+  return geoFromTris(t);
+}
+
+/* low-poly sphere (octahedron subdivided) — faceted on purpose */
+function geoSphere(sub) {
+  const s = sub === undefined ? 2 : sub;
+  let faces = [
+    [[0,1,0],[1,0,0],[0,0,1]], [[0,1,0],[0,0,1],[-1,0,0]],
+    [[0,1,0],[-1,0,0],[0,0,-1]], [[0,1,0],[0,0,-1],[1,0,0]],
+    [[0,-1,0],[0,0,1],[1,0,0]], [[0,-1,0],[-1,0,0],[0,0,1]],
+    [[0,-1,0],[0,0,-1],[-1,0,0]], [[0,-1,0],[1,0,0],[0,0,-1]],
+  ];
+  const norm = (v) => { const l = Math.hypot(v[0],v[1],v[2]); return [v[0]/l,v[1]/l,v[2]/l]; };
+  const mid = (a,b) => norm([(a[0]+b[0])/2,(a[1]+b[1])/2,(a[2]+b[2])/2]);
+  for (let i = 0; i < s; i++) {
+    const next = [];
+    for (const f of faces) {
+      const [a,b,c] = f;
+      const ab = mid(a,b), bc = mid(b,c), ca = mid(c,a);
+      next.push([a,ab,ca],[ab,b,bc],[ca,bc,c],[ab,bc,ca]);
+    }
+    faces = next;
+  }
+  const t = [];
+  for (const f of faces) {
+    pushTri(t, f[0][0]*0.5,f[0][1]*0.5,f[0][2]*0.5,
+               f[1][0]*0.5,f[1][1]*0.5,f[1][2]*0.5,
+               f[2][0]*0.5,f[2][1]*0.5,f[2][2]*0.5);
+  }
+  return geoFromTris(t);
+}
+
+/* tetrahedron — the mite */
+function geoTetra() {
+  const t = [];
+  const a=[0,0.5,0], b=[0.45,-0.25,0.26], c=[-0.45,-0.25,0.26], d=[0,-0.25,-0.52];
+  pushTri(t, a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+  pushTri(t, a[0],a[1],a[2], c[0],c[1],c[2], d[0],d[1],d[2]);
+  pushTri(t, a[0],a[1],a[2], d[0],d[1],d[2], b[0],b[1],b[2]);
+  pushTri(t, b[0],b[1],b[2], d[0],d[1],d[2], c[0],c[1],c[2]);
+  return geoFromTris(t);
+}
+
+/* a petal: a flattened, tapered blade lying along +X, hinged at the origin */
+function geoPetal() {
+  const t = [];
+  const w = 0.22, L = 1.0, lift = 0.10;
+  const base=[0,0,0];
+  const l1=[L*0.35, lift*0.6,  w], r1=[L*0.35, lift*0.6, -w];
+  const l2=[L*0.78, lift, w*0.62], r2=[L*0.78, lift, -w*0.62];
+  const tip=[L, lift*0.5, 0];
+  pushTri(t, base[0],base[1],base[2], l1[0],l1[1],l1[2], r1[0],r1[1],r1[2]);
+  pushQuad(t, l1, l2, r2, r1);
+  pushTri(t, l2[0],l2[1],l2[2], tip[0],tip[1],tip[2], r2[0],r2[1],r2[2]);
+  /* underside, so a petal seen from below is not an invisible sliver */
+  pushTri(t, r1[0],r1[1]-0.02,r1[2], l1[0],l1[1]-0.02,l1[2], base[0],base[1]-0.02,base[2]);
+  pushQuad(t, [r1[0],r1[1]-0.02,r1[2]], [r2[0],r2[1]-0.02,r2[2]],
+              [l2[0],l2[1]-0.02,l2[2]], [l1[0],l1[1]-0.02,l1[2]]);
+  pushTri(t, r2[0],r2[1]-0.02,r2[2], tip[0],tip[1]-0.02,tip[2], l2[0],l2[1]-0.02,l2[2]);
+  return geoFromTris(t);
+}
+
+/* a flat quad in the XZ plane, 1x1, centred — ground decals */
+function geoGroundQuad() {
+  const t = [];
+  pushQuad(t, [-0.5,0,-0.5],[0.5,0,-0.5],[0.5,0,0.5],[-0.5,0,0.5]);
+  return geoFromTris(t);
+}
+
+/* a flat quad in the XY plane, 1x1, centred — billboards */
+function geoBillboard() {
+  const t = [];
+  pushQuad(t, [-0.5,-0.5,0],[0.5,-0.5,0],[0.5,0.5,0],[-0.5,0.5,0]);
+  return geoFromTris(t);
+}
+
+/* a beam: a quad from Y=0 to Y=1, widening at the base, facing +Z */
+function geoBeam() {
+  const t = [];
+  pushQuad(t, [-1,0,0],[1,0,0],[0.28,1,0],[-0.28,1,0]);
+  return geoFromTris(t);
+}
+
+/* ---------------------------------------------------------------------------
+   The ground. Two triangles per tile, flat-shaded, with per-vertex colour
+   rewritten every frame from World.bloom — the same Float32Array the 2D build
+   uses, so "how much of the map has bloomed" is still real game state.
+   --------------------------------------------------------------------------- */
+const Ground = { vao: null, pos: null, col: null, colData: null, count: 0, dirty: true, lastBloomed: -1 };
+
+function buildGround() {
+  const W = World.w, H = World.h;
+  const tris = W * H * 2;
+  Ground.count = tris * 3;
+  const pos = new Float32Array(Ground.count * 3);
+  Ground.colData = new Float32Array(Ground.count * 4);   // rgb + bloom
+
+  let o = 0;
+  for (let z = 0; z < H; z++) {
+    for (let x = 0; x < W; x++) {
+      const x0 = x, x1 = x + 1, z0 = z, z1 = z + 1;
+      /* a shallow dip at the plateau rim so the edge reads as a drop, not a cut */
+      const e = (ax, az) => {
+        const d = Math.min(ax, az, W - ax, H - az);
+        return d < 2.5 ? -(2.5 - d) * 1.1 : 0;
+      };
+      const p = [
+        [x0, e(x0,z0), z0], [x1, e(x1,z0), z0],
+        [x1, e(x1,z1), z1], [x0, e(x0,z1), z1],
+      ];
+      const quad = [p[0],p[1],p[2], p[0],p[2],p[3]];
+      for (const v of quad) { pos[o++]=v[0]; pos[o++]=v[1]; pos[o++]=v[2]; }
+    }
+  }
+
+  Ground.dirty = true; Ground.lastBloomed = -1;
+  Ground.vao = gl.createVertexArray();
+  gl.bindVertexArray(Ground.vao);
+  Ground.pos = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, Ground.pos);
+  gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  Ground.col = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, Ground.col);
+  gl.bufferData(gl.ARRAY_BUFFER, Ground.colData, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+}
+
+/* Rewrite ground colours from the bloom field. Same colour ramp as the 2D
+   build, so the two versions read as the same world. */
+function updateGroundColors() {
+  /* The bloom field only changes when light is actively spreading. Rebuilding
+     and uploading 30k floats every frame was pure waste. */
+  if (!Ground.dirty && World.bloomedTiles === Ground.lastBloomed) return;
+  Ground.lastBloomed = World.bloomedTiles;
+  Ground.dirty = false;
+  const W = World.w, H = World.h, cd = Ground.colData;
+  let o = 0;
+  for (let z = 0; z < H; z++) {
+    for (let x = 0; x < W; x++) {
+      const i = z * W + x;
+      const b = World.bloom[i];
+      const solid = World.solid[i] === 1;
+      let c;
+      if (b < 0.5) c = mixRgb(C_LOW3, C_MID3, smooth(b * 2));
+      else         c = mixRgb(C_MID3, C_HIGH3, smooth((b - 0.5) * 2));
+      if (solid) c = mixRgb(c, RGB.ink, 0.55);
+      /* GDD avoid-list: no noisy backgrounds. Just enough variation to stop the
+         ground reading as a flat fill, not enough to look like static. */
+      const v = 0.94 + hash2(x, z) * 0.07;
+      const r = c[0] * v / 255, g = c[1] * v / 255, bl = c[2] * v / 255;
+      const bv = solid ? 0 : b;
+      for (let k = 0; k < 6; k++) { cd[o++]=r; cd[o++]=g; cd[o++]=bl; cd[o++]=bv; }
+    }
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, Ground.col);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, cd);
+}
+
+/* Albedo derived straight from the GDD palette rather than eyeballed. The
+   lighting pass multiplies by roughly AMBIENT+SUN, so pre-dividing by that
+   gain makes lit ground land on the palette colour the GDD specifies, and
+   point lights from blooms push it brighter from there — which is the
+   "luminescent" half of the mood. */
+const ALBEDO_GAIN = 1.0 / 0.70;
+const gain = (hex) => { const c = hexToRgb(hex); return [c[0]*ALBEDO_GAIN, c[1]*ALBEDO_GAIN, c[2]*ALBEDO_GAIN]; };
+const C_LOW3  = gain(PAL.base);                                        // #1A162B
+const C_MID3  = mixRgb(gain(PAL.terrain), gain(PAL.base), 0.18);       // #122B17
+/* 0.42, not higher: above that the green channel plus the beacon's point light
+   clip to 255 and the bloom goes white, losing the one colour it exists for. */
+const C_HIGH3 = mixRgb(gain(PAL.terrain), gain(PAL.bloom), 0.42);      // toward #8BE8A1
+/* ============================================================================
+   SCENE — shaders, lighting, and the three draw passes
+
+   Pass 1  LIT      opaque instanced geometry, depth write on
+   Pass 2  DECAL    ground-hugging alpha quads: shadows, capture rings
+   Pass 3  ADDITIVE billboard glows and volumetric beams, depth write off
+
+   Lighting is one cold directional key plus up to MAX_LIGHTS coloured point
+   lights. Every point light in the game is a bloom: beacons, the Boss Bloom,
+   the portal. Light literally marks liberated ground, which is the whole idea.
+   ========================================================================== */
+
+const MAX_LIGHTS = 8;
+
+const VS_LIT = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in mat4 iMat;
+layout(location=6) in vec3 iColor;
+layout(location=7) in vec3 iEmissive;
+uniform mat4 uViewProj;
+out vec3 vWorld; out vec3 vNormal; out vec3 vColor; out vec3 vEmissive;
+void main() {
+  vec4 wp = iMat * vec4(aPos, 1.0);
+  vWorld = wp.xyz;
+  vNormal = normalize(mat3(iMat) * aNormal);
+  vColor = iColor; vEmissive = iEmissive;
+  gl_Position = uViewProj * wp;
+}`;
+
+/* The ground is the largest surface on screen by far, so its lighting is done
+   PER VERTEX rather than per fragment: the grid is already two triangles per
+   tile with unshared, flat-shaded vertices, so the result is pixel-identical to
+   the per-fragment version while doing the light loop ~100x less often. */
+const VS_GROUND = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec4 aColor;   // rgb = albedo, a = bloom amount
+uniform mat4 uViewProj;
+uniform vec3 uAmbient;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform int uLightCount;
+uniform vec3 uLightPos[${MAX_LIGHTS}];
+uniform vec3 uLightColor[${MAX_LIGHTS}];
+uniform float uLightRange[${MAX_LIGHTS}];
+out vec3 vWorld; out vec3 vLitColor; out float vBloom;
+void main() {
+  vec3 N = vec3(0.0, 1.0, 0.0);
+  vec3 lit = uAmbient;
+  lit += uSunColor * max(dot(N, -uSunDir), 0.0);
+  for (int i = 0; i < ${MAX_LIGHTS}; i++) {
+    if (i >= uLightCount) break;
+    vec3 d = uLightPos[i] - aPos;
+    float dist = length(d);
+    float att = clamp(1.0 - dist / uLightRange[i], 0.0, 1.0);
+    att *= att;
+    lit += uLightColor[i] * att * (0.30 + 0.70 * max(dot(N, normalize(d)), 0.0));
+  }
+  vWorld = aPos;
+  vLitColor = aColor.rgb * lit;
+  vBloom = aColor.a;
+  gl_Position = uViewProj * vec4(aPos, 1.0);
+}`;
+
+const FS_GROUND = `#version 300 es
+precision highp float;
+in vec3 vWorld; in vec3 vLitColor; in float vBloom;
+uniform vec3 uCamPos;
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+uniform vec3 uGridColor;
+out vec4 outColor;
+void main() {
+  vec3 col = vLitColor;
+
+  /* The lattice the isometric build draws on bloomed tiles, in 3D: a tile grid
+     that only appears where the land has actually been taken back. fwidth keeps
+     the line one pixel wide at any distance instead of aliasing into noise. */
+  if (vBloom > 0.5) {
+    vec2 fr = fract(vWorld.xz);
+    vec2 d2 = min(fr, 1.0 - fr);
+    float e = min(d2.x, d2.y);
+    float w = fwidth(e) * 1.6 + 0.0015;
+    float line = 1.0 - smoothstep(0.0, w, e);
+    col += uGridColor * line * (vBloom - 0.5) * 0.20;
+  }
+
+  float dist = length(vWorld - uCamPos);
+  float f = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
+  outColor = vec4(mix(col, uFogColor, clamp(f, 0.0, 1.0)), 1.0);
+}`;
+
+const FS_LIT = `#version 300 es
+precision highp float;
+in vec3 vWorld; in vec3 vNormal; in vec3 vColor; in vec3 vEmissive;
+uniform vec3 uCamPos;
+uniform vec3 uAmbient;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+uniform int uLightCount;
+uniform vec3 uLightPos[${MAX_LIGHTS}];
+uniform vec3 uLightColor[${MAX_LIGHTS}];
+uniform float uLightRange[${MAX_LIGHTS}];
+uniform vec3 uRimColor;
+uniform float uRimStrength;
+out vec4 outColor;
+
+void main() {
+  // Two-sided shading: the procedural meshes are generated from a few different
+  // winding conventions, so rather than hand-auditing every face, flip the
+  // normal toward the viewer and render both sides. Correctness over a few
+  // culled triangles in a scene this small.
+  vec3 N = normalize(vNormal);
+  if (!gl_FrontFacing) N = -N;
+  // cold overcast ambient, slightly stronger from above
+  vec3 lit = uAmbient * (0.72 + 0.28 * max(N.y, 0.0));
+  lit += uSunColor * max(dot(N, -uSunDir), 0.0);
+
+  for (int i = 0; i < ${MAX_LIGHTS}; i++) {
+    if (i >= uLightCount) break;
+    vec3 d = uLightPos[i] - vWorld;
+    float dist = length(d);
+    float att = clamp(1.0 - dist / uLightRange[i], 0.0, 1.0);
+    att *= att;
+    lit += uLightColor[i] * att * (0.30 + 0.70 * max(dot(N, normalize(d)), 0.0));
+  }
+
+  vec3 col = vColor * lit + vEmissive;
+
+  /* Clean graphic line-work, per the GDD. A cold fresnel rim traces every
+     silhouette, which reads as drawn edges on flat-shaded geometry without
+     any extra draw calls. */
+  vec3 V = normalize(uCamPos - vWorld);
+  /* A high exponent matters here: these are flat boxes, and at a low exponent a
+     whole face sits at a glancing angle and lights up instead of just its edge. */
+  float rim = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 6.0);
+  col += uRimColor * rim * uRimStrength;
+
+  float dist = length(vWorld - uCamPos);
+  float f = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
+  col = mix(col, uFogColor, clamp(f, 0.0, 1.0));
+  outColor = vec4(col, 1.0);
+}`;
+
+/* ground decals: a radial or ring falloff on a flat quad */
+const VS_DECAL = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in mat4 iMat;
+layout(location=6) in vec3 iColor;
+layout(location=7) in vec3 iParams;   // x = alpha, y = mode (0 blob, 1 ring), z = arc fill 0..1
+uniform mat4 uViewProj;
+out vec2 vUV; out vec3 vColor; out vec3 vParams;
+void main() {
+  vUV = aPos.xz;
+  vColor = iColor; vParams = iParams;
+  gl_Position = uViewProj * (iMat * vec4(aPos, 1.0));
+}`;
+
+const FS_DECAL = `#version 300 es
+precision highp float;
+in vec2 vUV; in vec3 vColor; in vec3 vParams;
+out vec4 outColor;
+const float PI = 3.14159265;
+void main() {
+  float r = length(vUV) * 2.0;
+  if (r > 1.0) discard;
+  float a = vParams.x;
+  if (vParams.y < 0.5) {
+    a *= smoothstep(1.0, 0.25, r);                 // soft blob shadow
+  } else {
+    float ring = 1.0 - smoothstep(0.0, 0.14, abs(r - 0.92));
+    float fill = smoothstep(1.0, 0.88, r) * 0.16;  // faint interior wash
+    a *= (ring + fill);
+    if (vParams.z < 0.999) {                        // radial progress sweep
+      float ang = atan(vUV.x, -vUV.y) / (2.0 * PI);
+      if (ang < 0.0) ang += 1.0;
+      if (ang > vParams.z) a *= 0.22;
+    }
+  }
+  if (a <= 0.002) discard;
+  outColor = vec4(vColor, a);
+}`;
+
+/* additive: billboard glows and volumetric beams */
+const VS_ADD = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in mat4 iMat;
+layout(location=6) in vec3 iColor;
+layout(location=7) in vec3 iParams;   // x = intensity, y = mode (0 glow, 1 beam)
+uniform mat4 uViewProj;
+out vec3 vLocal; out vec3 vColor; out vec3 vParams;
+void main() {
+  vLocal = aPos;
+  vColor = iColor; vParams = iParams;
+  gl_Position = uViewProj * (iMat * vec4(aPos, 1.0));
+}`;
+
+const FS_ADD = `#version 300 es
+precision highp float;
+in vec3 vLocal; in vec3 vColor; in vec3 vParams;
+out vec4 outColor;
+void main() {
+  float a;
+  if (vParams.y < 0.5) {
+    float r = length(vLocal.xy) * 2.0;
+    a = clamp(1.0 - r, 0.0, 1.0);
+    a = a * a;                                      // soft radial glow
+  } else {
+    a = clamp(1.0 - vLocal.y, 0.0, 1.0);            // beam fades with height
+    a = a * a * 0.9;
+    a *= clamp(1.0 - abs(vLocal.x) * 0.9, 0.0, 1.0);
+  }
+  a *= vParams.x;
+  if (a <= 0.003) discard;
+  outColor = vec4(vColor * a, a);
+}`;
+
+/* The diffuse horizon fill the GDD asks for: a vertical gradient drawn behind
+   the whole scene so the plateau reads as open sky rather than a black void. */
+const VS_SKY = `#version 300 es
+const vec2 P[3] = vec2[3](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));
+out vec2 vUV;
+void main() {
+  vec2 p = P[gl_VertexID];
+  vUV = p * 0.5 + 0.5;
+  gl_Position = vec4(p, 0.0, 1.0);
+}`;
+
+const FS_SKY = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform vec3 uTop;
+uniform vec3 uHorizon;
+out vec4 outColor;
+void main() {
+  float t = clamp(vUV.y * 1.35, 0.0, 1.0);
+  outColor = vec4(mix(uHorizon, uTop, t), 1.0);
+}`;
+
+/* --- programs and batches ---------------------------------------------------- */
+let P_LIT = null, P_GROUND = null, P_DECAL = null, P_ADD = null, P_SKY = null;
+let skyVao = null;
+const GEO = {};
+const B = {};   // lit batches
+const D = {};   // decal batch
+const A = {};   // additive batches
+
+function initScene() {
+  P_LIT    = glProgram(VS_LIT, FS_LIT);
+  P_GROUND = glProgram(VS_GROUND, FS_GROUND);
+  P_DECAL  = glProgram(VS_DECAL, FS_DECAL);
+  P_ADD    = glProgram(VS_ADD, FS_ADD);
+  P_SKY    = glProgram(VS_SKY, FS_SKY);
+  skyVao   = gl.createVertexArray();
+
+  GEO.box     = geoBox();
+  GEO.cyl     = geoCylinder(10);
+  GEO.cone    = geoCone(8);
+  GEO.sphere  = geoSphere(2);
+  GEO.sphereLo= geoSphere(1);
+  GEO.tetra   = geoTetra();
+  GEO.petal   = geoPetal();
+  GEO.gquad   = geoGroundQuad();
+  GEO.bill    = geoBillboard();
+  GEO.beam    = geoBeam();
+
+  for (const k of ['box','cyl','cone','sphere','sphereLo','tetra','petal']) B[k] = makeBatch(GEO[k]);
+  D.quad = makeBatch(GEO.gquad);
+  A.glow = makeBatch(GEO.bill);
+  A.beam = makeBatch(GEO.beam);
+
+  gl.enable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);   // see the two-sided note in FS_LIT
+}
+
+/* --- lights ------------------------------------------------------------------ */
+const lightPos = new Float32Array(MAX_LIGHTS * 3);
+const lightCol = new Float32Array(MAX_LIGHTS * 3);
+const lightRng = new Float32Array(MAX_LIGHTS);
+let lightCount = 0;
+
+function resetLights() { lightCount = 0; }
+function addLight(x, y, z, hex, intensity, range) {
+  if (lightCount >= MAX_LIGHTS) return;
+  const c = hexToRgb(hex);
+  const i = lightCount * 3;
+  lightPos[i]=x; lightPos[i+1]=y; lightPos[i+2]=z;
+  lightCol[i]=c[0]/255*intensity; lightCol[i+1]=c[1]/255*intensity; lightCol[i+2]=c[2]/255*intensity;
+  lightRng[lightCount] = range;
+  lightCount++;
+}
+
+/* --- per-frame uniforms ------------------------------------------------------ */
+const FOG = hexToRgb(PAL.ink);
+/* Icy overcast key. Deliberately weak and blue-grey: the warm-free ambient is
+   what makes the green and cyan blooms the only real light in the scene. */
+const AMBIENT = [0.42, 0.44, 0.52];
+const SUN     = [0.26, 0.29, 0.34];
+
+function setSceneUniforms(p, viewProj, camX, camY, camZ) {
+  gl.useProgram(p.prog);
+  gl.uniformMatrix4fv(p.u.uViewProj, false, viewProj);
+  if (p.u.uCamPos) gl.uniform3f(p.u.uCamPos, camX, camY, camZ);
+  if (p.u.uAmbient) gl.uniform3f(p.u.uAmbient, AMBIENT[0], AMBIENT[1], AMBIENT[2]);
+  if (p.u.uSunDir) {
+    const d = [0.35, -0.86, 0.36];
+    gl.uniform3f(p.u.uSunDir, d[0], d[1], d[2]);
+  }
+  if (p.u.uSunColor) gl.uniform3f(p.u.uSunColor, SUN[0], SUN[1], SUN[2]);
+  if (p.u.uFogColor) gl.uniform3f(p.u.uFogColor, FOG[0]/255, FOG[1]/255, FOG[2]/255);
+  if (p.u.uFogDensity) gl.uniform1f(p.u.uFogDensity, CONFIG3D.FOG_DENSITY);
+  if (p.u.uGridColor) {
+    const gc = hexToRgb(PAL.bloom);
+    gl.uniform3f(p.u.uGridColor, gc[0]/255, gc[1]/255, gc[2]/255);
+  }
+  if (p.u.uRimColor) {
+    const rc = hexToRgb(PAL.bone);
+    gl.uniform3f(p.u.uRimColor, rc[0]/255, rc[1]/255, rc[2]/255);
+    gl.uniform1f(p.u.uRimStrength, CONFIG3D.RIM_STRENGTH);
+  }
+  if (p.u.uLightCount) gl.uniform1i(p.u.uLightCount, lightCount);
+  if (p.u.uLightPos && lightCount) {
+    gl.uniform3fv(p.u.uLightPos, lightPos.subarray(0, lightCount * 3));
+    gl.uniform3fv(p.u.uLightColor, lightCol.subarray(0, lightCount * 3));
+    gl.uniform1fv(p.u.uLightRange, lightRng.subarray(0, lightCount));
+  }
+}
+
+/* --- helpers used by the prop builders --------------------------------------- */
+const _m = m4();
+function lit(batch, x, y, z, ry, rx, rz, sx, sy, sz, col, emi) {
+  m4trs(_m, x, y, z, ry, rx, rz, sx, sy, sz);
+  const c = typeof col === 'string' ? hexToRgb(col) : col;
+  const e = emi ? (typeof emi === 'string' ? hexToRgb(emi) : emi) : null;
+  batchPush(batch, _m, c[0]/255, c[1]/255, c[2]/255,
+            e ? e[0]/255 : 0, e ? e[1]/255 : 0, e ? e[2]/255 : 0);
+}
+function decal(x, z, radius, hex, alpha, mode, arc) {
+  m4trs(_m, x, CONFIG3D.DECAL_HEIGHT, z, 0, 0, 0, radius * 2, 1, radius * 2);
+  const c = hexToRgb(hex);
+  batchPush(D.quad, _m, c[0]/255, c[1]/255, c[2]/255, alpha, mode || 0, arc === undefined ? 1 : arc);
+}
+function glow(x, y, z, size, hex, intensity) {
+  const dx = x - Cam3.x, dz = z - Cam3.z;
+  if (dx * dx + dz * dz > CONFIG3D.GLOW_CULL_DIST * CONFIG3D.GLOW_CULL_DIST) return;
+  /* billboard: face the camera by using the camera's basis vectors */
+  billboardMatrix(_m, x, y, z, size);
+  const c = hexToRgb(hex);
+  batchPush(A.glow, _m, c[0]/255, c[1]/255, c[2]/255, intensity, 0, 0);
+}
+function beam(x, z, height, width, hex, intensity) {
+  /* beams billboard around the Y axis only, so they stay vertical */
+  const dx = Cam3.x - x, dz = Cam3.z - z;
+  const ry = Math.atan2(dx, dz);
+  m4trs(_m, x, 0.05, z, ry, 0, 0, width, height, 1);
+  const c = hexToRgb(hex);
+  batchPush(A.beam, _m, c[0]/255, c[1]/255, c[2]/255, intensity, 1, 0);
+}
+
+/* camera-facing billboard matrix built from the view matrix basis */
+function billboardMatrix(o, x, y, z, s) {
+  const r = Cam3.right, u = Cam3.up;
+  o[0]=r[0]*s; o[1]=r[1]*s; o[2]=r[2]*s; o[3]=0;
+  o[4]=u[0]*s; o[5]=u[1]*s; o[6]=u[2]*s; o[7]=0;
+  o[8]=Cam3.fwd[0]; o[9]=Cam3.fwd[1]; o[10]=Cam3.fwd[2]; o[11]=0;
+  o[12]=x; o[13]=y; o[14]=z; o[15]=1;
+  return o;
+}
+
+/* --- horizon fill ------------------------------------------------------------- */
+function drawSky() {
+  gl.useProgram(P_SKY.prog);
+  const top = hexToRgb(PAL.ink);
+  const hz  = mixRgb(hexToRgb(PAL.base), hexToRgb(PAL.bone), CONFIG3D.HORIZON_FILL);
+  gl.uniform3f(P_SKY.u.uTop, top[0]/255, top[1]/255, top[2]/255);
+  gl.uniform3f(P_SKY.u.uHorizon, hz[0]/255, hz[1]/255, hz[2]/255);
+  gl.bindVertexArray(skyVao);
+  gl.disable(gl.DEPTH_TEST);
+  gl.depthMask(false);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthMask(true);
+  gl.bindVertexArray(null);
+}
+/* ============================================================================
+   THIRD-PERSON CAMERA + INPUT
+
+   Over the shoulder, pointer-locked mouse-look. WASD is relative to where the
+   camera is facing. Firing raycasts the centre reticle onto the ground plane
+   and hands the resulting direction to the existing 2D simulation through
+   Game.intent — so every tuned number from the isometric build still applies.
+   ========================================================================== */
+
+const Cam3 = {
+  yaw: 0, pitch: -0.22,
+  x: 0, y: 0, z: 0,
+  dist: 0, height: 0,
+  right: [1,0,0], up: [0,1,0], fwd: [0,0,1],
+  aimX: 1, aimZ: 0,          // ground-plane aim point, world units
+  shake: 0,
+};
+
+const Look = {
+  locked: false, dx: 0, dy: 0,
+  lockDenied: false,          // pointer lock refused (embedded viewers often do)
+  lastX: null, lastY: null,   // fallback look uses raw mouse deltas instead
+  px: null, py: null,         // absolute cursor, client coords — high-angle aiming
+  keys: {}, mouseDown: false,
+  once: {},
+  key(k) { return !!this.keys[k]; },
+  pressed(k) { if (this.once[k]) { this.once[k] = false; return true; } return false; },
+  clearFrame() { this.once = {}; },
+};
+
+/* --- camera mode -------------------------------------------------------------
+   The two modes disagree about what the mouse is for, so swapping has to move
+   the pointer lock as well as the framing. Everything else — movement, firing,
+   the whole simulation — is untouched by the swap.
+   --------------------------------------------------------------------------- */
+let lookCanvas = null;
+let camModeFade = 0;               // drives the on-screen mode flash
+
+function isHighAngle() { return CONFIG3D.CAMERA_MODE === 'highangle'; }
+
+function setCameraMode(mode) {
+  if (CONFIG3D.CAMERA_MODE === mode) return;
+  CONFIG3D.CAMERA_MODE = mode;
+  camModeFade = 2.4;
+  Look.dx = 0; Look.dy = 0;
+  if (mode === 'highangle') {
+    /* a free cursor and a captured one cannot both be true */
+    /* releasing the lock ourselves must not read as the player pressing Escape */
+    Look.suppressLockPause = true;
+    if (document.pointerLockElement) { try { document.exitPointerLock(); } catch (err) {} }
+    Cam3.yaw = CONFIG3D.HIGH_YAW;
+    Cam3.pitch = CONFIG3D.HIGH_PITCH;
+    if (lookCanvas) lookCanvas.style.cursor = 'crosshair';
+  } else {
+    if (lookCanvas) {
+      lookCanvas.style.cursor = 'none';
+      if (!Look.lockDenied && Game.state === STATE.PLAY && !Game.paused &&
+          lookCanvas.requestPointerLock) {
+        try { lookCanvas.requestPointerLock(); } catch (err) { Look.lockDenied = true; }
+      }
+    }
+  }
+}
+
+function bindInput3D(canvas) {
+  lookCanvas = canvas;
+  canvas.style.cursor = isHighAngle() ? 'crosshair' : 'none';
+  window.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (!Look.keys[k]) Look.once[k] = true;
+    Look.keys[k] = true;
+    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].indexOf(k) >= 0) e.preventDefault();
+    Audio_.init();
+    if (k === 'r') startRun3D();
+    if (k === 'm') Audio_.muted = !Audio_.muted;
+    if (k === 'f1') { CONFIG.SHOW_DEBUG = !CONFIG.SHOW_DEBUG; e.preventDefault(); }
+    if (k === 'c') setCameraMode(isHighAngle() ? 'shoulder' : 'highangle');
+    /* Escape releases the cursor by browser fiat; make it actually pause too,
+       and let it toggle back out when the cursor is already free. */
+    if (k === 'escape' && Game.state === STATE.PLAY) Game.paused = !Game.paused;
+    if ((k === ' ' || k === 'p') && Game.state === STATE.PLAY) {
+      Game.paused = !Game.paused; e.preventDefault();
+    }
+  });
+  window.addEventListener('keyup', (e) => { Look.keys[e.key.toLowerCase()] = false; });
+
+  canvas.addEventListener('mousedown', (e) => {
+    Audio_.init();
+    /* a click while paused resumes; it does not also fire that frame */
+    const wantLock = !isHighAngle() && !Look.locked && !Look.lockDenied && canvas.requestPointerLock;
+    if (Game.paused) {
+      Game.paused = false;
+      if (wantLock) { try { canvas.requestPointerLock(); } catch (err) { Look.lockDenied = true; } }
+      return;
+    }
+    if (wantLock) { try { canvas.requestPointerLock(); } catch (err) { Look.lockDenied = true; } }
+    if (e.button === 0) Look.mouseDown = true;
+  });
+  window.addEventListener('mouseup', (e) => { if (e.button === 0) Look.mouseDown = false; });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  document.addEventListener('pointerlockchange', () => {
+    const was = Look.locked;
+    Look.locked = document.pointerLockElement === canvas;
+    Look.lastX = null; Look.lastY = null;
+    if (!Look.locked) {
+      Look.mouseDown = false;
+      /* losing a lock we actually had means the player hit Escape — pause,
+         unless we were the ones who let it go on a camera-mode swap */
+      if (was && Game.state === STATE.PLAY && !Look.suppressLockPause) Game.paused = true;
+      Look.suppressLockPause = false;
+    }
+  });
+  /* Pointer lock is refused inside some embedded viewers. Rather than leave the
+     game unplayable there, fall back to steering from raw cursor deltas. */
+  document.addEventListener('pointerlockerror', () => { Look.lockDenied = true; });
+
+  document.addEventListener('mousemove', (e) => {
+    /* always tracked: high-angle mode aims from the cursor's actual position */
+    Look.px = e.clientX; Look.py = e.clientY;
+    if (Look.locked) {
+      Look.dx += e.movementX; Look.dy += e.movementY;
+      return;
+    }
+    if (Look.lastX !== null) {
+      Look.dx += (e.clientX - Look.lastX);
+      Look.dy += (e.clientY - Look.lastY);
+    }
+    Look.lastX = e.clientX; Look.lastY = e.clientY;
+  });
+  window.addEventListener('blur', () => { Look.keys = {}; Look.mouseDown = false; });
+}
+
+/* --- camera update -----------------------------------------------------------
+   Screen-right for a yaw-only camera is up x (-forward) = (-cos yaw, 0, sin yaw).
+   This was written as (cos yaw, -sin yaw) — the exact negation — which is why
+   A/D were reversed and the shoulder sat on the wrong side.
+   ----------------------------------------------------------------------------- */
+function camForward(yaw, pitch) {
+  const cp = Math.cos(pitch);
+  return [Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp];
+}
+function camRight(yaw) { return [-Math.cos(yaw), 0, Math.sin(yaw)]; }
+
+/* Current vertical FOV in radians — the two modes film at different lengths. */
+function camFov() {
+  return (isHighAngle() ? CONFIG3D.HIGH_FOV : CONFIG3D.FOV) * Math.PI / 180;
+}
+
+/* --- cursor -> ground ---------------------------------------------------------
+   High-angle mode aims with a free cursor, so the aim point is where the ray
+   through that pixel meets the ground plane. Cam3.right is the view matrix's own
+   +X and Cam3.up its +Y (m4lookAt builds x = up x (eye-centre), which for this
+   basis is exactly camRight), so a view-space point at depth 1 is
+   right*ndcX*tanH + up*ndcY*tanV + fwd. verify3d asserts this by projecting the
+   result back to the pixel it came from.
+   --------------------------------------------------------------------------- */
+function screenRayToGround(px, py, w, h) {
+  const ndcX = (px / w) * 2 - 1;
+  const ndcY = 1 - (py / h) * 2;
+  const tanV = Math.tan(camFov() / 2);
+  const tanH = tanV * (w / Math.max(1, h));
+  const F = Cam3.fwd, R = Cam3.right, U = Cam3.up;
+  const dx = F[0] + R[0] * ndcX * tanH + U[0] * ndcY * tanV;
+  const dy = F[1] + R[1] * ndcX * tanH + U[1] * ndcY * tanV;
+  const dz = F[2] + R[2] * ndcX * tanH + U[2] * ndcY * tanV;
+  if (dy > -1e-4) return null;                       // ray points at the sky
+  const len = Math.hypot(dx, dy, dz) || 1;
+  const t = Math.min(CONFIG3D.AIM_MAX_DIST, (Cam3.y / -dy) * len) / len;
+  return [Cam3.x + dx * t, Cam3.z + dz * t];
+}
+
+/* The cursor in canvas pixels; screen centre until the mouse has been moved. */
+function cursorCanvasPos() {
+  const w = (typeof VW === 'number' && VW) || 1280;
+  const h = (typeof VH === 'number' && VH) || 720;
+  if (Look.px === null || !lookCanvas || !lookCanvas.getBoundingClientRect) return [w / 2, h / 2, w, h];
+  const r = lookCanvas.getBoundingClientRect();
+  if (!r.width || !r.height) return [w / 2, h / 2, w, h];
+  return [Look.px - r.left, Look.py - r.top, r.width, r.height];
+}
+
+function updateCamera3D(dt) {
+  const C = CONFIG3D;
+  const high = isHighAngle();
+
+  if (camModeFade > 0) camModeFade = Math.max(0, camModeFade - dt);
+
+  if (high) {
+    /* fixed framing: the mouse is a cursor here, not a look axis */
+    Cam3.yaw = C.HIGH_YAW;
+    Cam3.pitch = C.HIGH_PITCH;
+    Look.dx = 0; Look.dy = 0;
+  } else {
+    Cam3.yaw   -= Look.dx * C.MOUSE_SENSITIVITY;
+    Cam3.pitch -= Look.dy * C.MOUSE_SENSITIVITY;
+    Look.dx = 0; Look.dy = 0;
+    Cam3.pitch = clamp(Cam3.pitch, C.PITCH_MIN, C.PITCH_MAX);
+  }
+
+  const f = camForward(Cam3.yaw, Cam3.pitch);
+  const r = camRight(Cam3.yaw);
+  Cam3.fwd = f;
+  Cam3.right = r;
+  /* up = right x forward — keeps the basis orthonormal with zero roll */
+  Cam3.up = [
+    r[1]*f[2] - r[2]*f[1],
+    r[2]*f[0] - r[0]*f[2],
+    r[0]*f[1] - r[1]*f[0],
+  ];
+
+  /* The camera orbits a pivot above the player and looks ALONG its forward
+     axis — not at the player. That is what puts the reticle out in the world
+     instead of on the player's own head, and it is why the bullets and the
+     reticle now agree. */
+  /* --- high-angle: player centred, no shoulder, no occlusion pull-in --------
+     Nothing on the plateau is tall enough to occlude a camera 24 tiles up, so
+     the pull-in march is skipped rather than wasted. The player sits at the
+     exact centre of frame because the camera looks straight down its own
+     forward axis at the pivot distance. */
+  if (high) {
+    const f2 = camForward(Cam3.yaw, Cam3.pitch);
+    const tx = Player.wx - f2[0] * C.HIGH_DIST;
+    const ty = C.PLAYER_EYE - f2[1] * C.HIGH_DIST;
+    const tz = Player.wy - f2[2] * C.HIGH_DIST;
+    const k2 = 1 - Math.exp(-C.HIGH_LERP * dt);
+    Cam3.x += (tx - Cam3.x) * k2;
+    Cam3.y += (ty - Cam3.y) * k2;
+    Cam3.z += (tz - Cam3.z) * k2;
+    Cam3.dist = C.HIGH_DIST;
+
+    const cur = cursorCanvasPos();
+    const g = screenRayToGround(cur[0], cur[1], cur[2], cur[3]);
+    if (g) { Cam3.aimX = g[0]; Cam3.aimZ = g[1]; }
+    else {
+      Cam3.aimX = Player.wx + Math.sin(Cam3.yaw) * 6;
+      Cam3.aimZ = Player.wy + Math.cos(Cam3.yaw) * 6;
+    }
+    return;
+  }
+
+  const pivX = Player.wx, pivY = C.PLAYER_EYE + C.CAM_HEIGHT, pivZ = Player.wy;
+
+  let want = C.CAM_DIST;
+  let cx = pivX - f[0] * want + r[0] * C.CAM_SHOULDER;
+  let cy = pivY - f[1] * want;
+  let cz = pivZ - f[2] * want + r[2] * C.CAM_SHOULDER;
+
+  /* occlusion: stop at the first thing tall enough to sit between us */
+  const STEPS = 14;
+  let blocked = 1;
+  for (let i = 1; i <= STEPS; i++) {
+    const t = i / STEPS;
+    const sx2 = pivX + (cx - pivX) * t;
+    const sy2 = pivY + (cy - pivY) * t;
+    const sz2 = pivZ + (cz - pivZ) * t;
+    const h = solidHeightAt(sx2, sz2) * C.STRUCTURE_HEIGHT;
+    if (h > 0 && sy2 < h + 0.35) { blocked = Math.max(0.16, (i - 1) / STEPS * 0.94); break; }
+  }
+  if (blocked < 1) {
+    want *= blocked;
+    cx = pivX - f[0] * want + r[0] * C.CAM_SHOULDER * blocked;
+    cy = pivY - f[1] * want;
+    cz = pivZ - f[2] * want + r[2] * C.CAM_SHOULDER * blocked;
+  }
+  cy = Math.max(cy, 0.8);
+
+  const k = 1 - Math.exp(-C.CAM_LERP * dt);
+  Cam3.x += (cx - Cam3.x) * k;
+  Cam3.y += (cy - Cam3.y) * k;
+  Cam3.z += (cz - Cam3.z) * k;
+  Cam3.dist = want;
+
+  /* The reticle sits at the centre of the screen, so the aim point is simply
+     where the camera's forward axis meets the ground. */
+  if (f[1] < -0.03) {
+    const t = Math.min(C.AIM_MAX_DIST, Cam3.y / -f[1]);
+    Cam3.aimX = Cam3.x + f[0] * t;
+    Cam3.aimZ = Cam3.z + f[2] * t;
+  } else {
+    Cam3.aimX = Cam3.x + Math.sin(Cam3.yaw) * C.AIM_MAX_DIST;
+    Cam3.aimZ = Cam3.z + Math.cos(Cam3.yaw) * C.AIM_MAX_DIST;
+  }
+}
+
+/* --- turn input into the simulation's intent --------------------------------- */
+function buildIntent3D() {
+  let ix = 0, iz = 0;
+  if (Look.key('w')) iz += 1;
+  if (Look.key('s')) iz -= 1;
+  if (Look.key('a')) ix -= 1;
+  if (Look.key('d')) ix += 1;
+
+  /* WASD relative to where the camera is facing, on the ground plane */
+  const fx = Math.sin(Cam3.yaw), fz = Math.cos(Cam3.yaw);
+  const rx = -Math.cos(Cam3.yaw), rz = Math.sin(Cam3.yaw);
+  let mx = fx * iz + rx * ix;
+  let mz = fz * iz + rz * ix;
+  const m = Math.hypot(mx, mz);
+  if (m > 1e-5) { mx /= m; mz /= m; } else { mx = 0; mz = 0; }
+
+  let ax = Cam3.aimX - Player.wx, az = Cam3.aimZ - Player.wy;
+  const a = Math.hypot(ax, az);
+  if (a > 1e-5) { ax /= a; az /= a; } else { ax = fx; az = fz; }
+
+  Game.intent = {
+    mx, my: mz,
+    ax, ay: az,
+    /* held, not edge-triggered: a one-frame press had to coincide exactly with
+       being inside the cache radius, which is why opening one felt broken */
+    interact: Look.key('e'),
+    fire: Look.mouseDown,
+  };
+}
+/* ============================================================================
+   PROPS — every game object, built from primitives each frame
+
+   Counts are small (a few hundred instances), so rebuilding the instance lists
+   per frame is cheaper than tracking a scene graph, and it means the renderer
+   reads straight off simulation state with nothing to keep in sync.
+   ========================================================================== */
+
+function buildFrame() {
+  for (const k in B) batchReset(B[k]);
+  batchReset(D.quad);
+  batchReset(A.glow);
+  batchReset(A.beam);
+  resetLights();
+
+  propsStructures();
+  propsFlowers();
+  propsChests();
+  propsPickups();
+  propsEnemies();
+  propsBoss();
+  propsPortal();
+  propsPlayer();
+  propsBolts();
+  propsParticles();
+}
+
+/* --- ruins ------------------------------------------------------------------- */
+function propsStructures() {
+  for (const s of World.structures) {
+    const cx = s.x + s.w / 2, cz = s.y + s.h / 2;
+    if (dist(cx, cz, Cam3.x, Cam3.z) > CONFIG3D.CULL_DIST) continue;
+    const b = bloomAt(cx, cz);
+    /* albedo, brightened for the lighting pass — see C_LOW3 */
+    /* #271B2E from the GDD, pre-divided by the lighting gain like the ground */
+    let col = mixRgb(gain(PAL.structure), gain(PAL.base), 0.12 - World.toneStructure * 0.25);
+    col = mixRgb(col, gain(PAL.bloom), b * 0.16);
+    col = mixRgb(col, gain(PAL.ink), Math.abs(s.seed - 0.5) * 0.5);
+    const h = s.ht * CONFIG3D.STRUCTURE_HEIGHT;
+    lit(B.box, cx, 0, cz, 0, 0, 0, s.w, h, s.h, col, null);
+    /* a broken cap so the silhouette is a ruin, not a crate */
+    if (s.broken) {
+      const cap = mixRgb(col, RGB.ink, 0.35);
+      lit(B.box, cx + (s.seed - 0.5) * s.w * 0.5, h, cz + (s.seed - 0.5) * s.h * 0.5,
+          s.seed * 2, 0, 0, s.w * 0.45, h * 0.16, s.h * 0.45, cap, null);
+    }
+  }
+}
+
+/* --- beacon flowers ---------------------------------------------------------- */
+function propsFlowers() {
+  for (const f of flowers) {
+    const T = FLOWER_TYPES[f.type];
+    const d = dist(f.wx, f.wy, Cam3.x, Cam3.z);
+    if (d > CONFIG3D.CULL_DIST) continue;
+
+    const open = f.bloomed ? ease(f.bloomAnim) : f.progress * 0.25;
+    const stalkH = CONFIG3D.FLOWER_HEIGHT * (0.72 + open * 0.28);
+    const sway = Math.sin(f.sway) * 0.06 * (0.4 + open);
+
+    const stalkCol = f.bloomed ? mixRgb(hexToRgb(PAL.bloom), RGB.ink, 0.45) : [70, 78, 72];
+    lit(B.cyl, f.wx, 0, f.wy, 0, sway, 0, 0.16, stalkH, 0.16, stalkCol, null);
+
+    /* petals: hinged at the head, folded shut until it blooms */
+    const hx = f.wx + sway * stalkH, hy = stalkH, hz = f.wy;
+    const n = 6;
+    const droop = lerp(-1.15, 0.30, open);   // radians: shut bud -> open face
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU + f.sway * 0.2;
+      const petalCol = f.bloomed ? T.petal : '#5C6360';
+      const emi = f.bloomed ? mixRgb(hexToRgb(T.petal), [0,0,0], 0.72) : null;
+      if (T.disc) {
+        /* flat round seed-discs on short stems — the silver dollar plant */
+        const rr = CONFIG3D.FLOWER_PETAL * (0.34 + open * 0.20);
+        const reach = CONFIG3D.FLOWER_PETAL * (0.30 + open * 0.48);
+        lit(B.sphereLo, hx + Math.cos(a) * reach, hy + Math.sin(a * 1.7) * 0.08, hz + Math.sin(a) * reach,
+            a, 0, droop * 0.5, rr, rr * 1.05, rr * 0.16, petalCol, emi);
+      } else {
+        lit(B.petal, hx, hy, hz, a, 0, droop,
+            CONFIG3D.FLOWER_PETAL * (0.6 + open * 0.4),
+            CONFIG3D.FLOWER_PETAL, CONFIG3D.FLOWER_PETAL, petalCol, emi);
+      }
+    }
+    /* core */
+    const coreR = 0.18 + open * 0.14;
+    lit(B.sphere, hx, hy, hz, 0, 0, 0, coreR, coreR, coreR,
+        f.bloomed ? T.core : '#474D4B', f.bloomed ? T.core : null);
+
+    if (f.bloomed) {
+      const pulse = 0.9 + Math.sin(f.sway * 1.6) * 0.1;
+      addLight(hx, hy, hz, T.petal, CONFIG3D.BEACON_LIGHT * pulse,
+               CONFIG.FLOWER_BLOOM_RADIUS * CONFIG3D.BEACON_LIGHT_RANGE);
+      beam(f.wx, f.wy, CONFIG3D.BEAM_HEIGHT * f.bloomAnim, 0.62, T.petal, 0.42);
+      glow(hx, hy, hz, 2.6 * pulse, T.core, 0.55);
+    } else {
+      /* the capture ring, and the petal-unfurl sweep that fills it */
+      decal(f.wx, f.wy, CONFIG.FLOWER_HOLD_RADIUS, T.petal,
+            f.inRadius ? 0.55 : 0.22, 1, f.progress > 0 ? f.progress : 1);
+      if (f.progress > 0) glow(hx, hy, hz, 1.2 + f.progress * 1.4, T.petal, 0.25 * f.progress);
+    }
+    shadow3(f.wx, f.wy, 0.5);
+  }
+}
+
+/* --- seed caches -------------------------------------------------------------- */
+function propsChests() {
+  for (const c of chests) {
+    if (dist(c.wx, c.wy, Cam3.x, Cam3.z) > CONFIG3D.CULL_DIST) continue;
+    const bob = Math.sin(c.sway * 1.6) * 0.05;
+    const open = ease(c.openAnim);
+    const body = c.opened ? '#3A3442' : '#3B3348';
+    lit(B.sphere, c.wx, 0.34 + bob, c.wy, c.sway * 0.2, 0, 0, 0.8, 0.95, 0.8, body, null);
+    if (!c.opened) {
+      lit(B.sphereLo, c.wx, 0.62 + bob, c.wy, 0, 0, 0, 0.2, 0.2, 0.2, PAL.silver, '#4A5A68');
+      glow(c.wx, 0.62 + bob, c.wy, 1.1, PAL.silver, 0.22);
+      const afford = Player.silver >= c.cost;
+      decal(c.wx, c.wy, CONFIG.CHEST_INTERACT_RADIUS,
+            afford ? PAL.silver : PAL.bone, c.near ? 0.5 : 0.2, 1, 1);
+    } else {
+      /* husk peeled open */
+      for (let i = -1; i <= 1; i += 2) {
+        lit(B.petal, c.wx, 0.55 + bob, c.wy, i > 0 ? 0 : Math.PI, 0, -0.9 - open * 0.6,
+            0.55, 0.55, 0.55, '#4A4356', null);
+      }
+    }
+    shadow3(c.wx, c.wy, 0.45);
+  }
+}
+
+function propsPickups() {
+  for (const p of pickups) {
+    if (dist(p.wx, p.wy, Cam3.x, Cam3.z) > CONFIG3D.CULL_DIST * 0.6) continue;
+    const bob = 0.32 + Math.sin(p.spin * 2.4) * 0.08;
+    lit(B.tetra, p.wx, bob, p.wy, p.spin * 2, 0.4, 0, 0.26, 0.26, 0.26, PAL.silver, '#55697A');
+    glow(p.wx, bob, p.wy, 0.8, PAL.silver, 0.30);
+  }
+}
+
+/* --- enemies ------------------------------------------------------------------ */
+function propsEnemies() {
+  for (const e of enemies) {
+    if (dist(e.wx, e.wy, Cam3.x, Cam3.z) > CONFIG3D.CULL_DIST) continue;
+    const flash = e.hitFlash > 0.15;
+    const face = Math.atan2(Player.wx - e.wx, Player.wy - e.wy);
+    const bob = Math.sin(e.t * 6) * 0.05;
+
+    if (e.kind === 'rusher') {
+      const winding = e.windup > 0, lunging = e.lunge > 0;
+      const body = flash ? '#FFFFFF' : winding ? '#A63450' : lunging ? '#7A2338' : '#4A2436';
+      lit(B.cone, e.wx, 0.02 + bob, e.wy, face, 0, 0, 0.95, 1.35, 0.95, body, null);
+      /* thorns */
+      for (let i = -1; i <= 1; i += 2) {
+        lit(B.cone, e.wx + Math.cos(face) * 0.3 * i, 0.75 + bob, e.wy - Math.sin(face) * 0.3 * i,
+            face, 0.9, i * 0.7, 0.26, 0.62, 0.26, flash ? '#FFFFFF' : PAL.blood, null);
+      }
+      lit(B.sphereLo, e.wx, 0.95 + bob, e.wy, 0, 0, 0, 0.2, 0.2, 0.2,
+          lunging ? '#FF6E86' : PAL.blood, lunging ? '#8E2233' : '#3A0F18');
+      if (winding) {
+        const t = 1 - e.windup / CONFIG.RUSHER_LUNGE_TELEGRAPH;
+        decal(e.wx, e.wy, 0.8 + t * 1.6, PAL.blood, 0.30 + t * 0.45, 1, 1);
+      }
+
+    } else if (e.kind === 'spitter') {
+      lit(B.cyl, e.wx, 0, e.wy, 0, 0, 0, 0.22, 0.75, 0.22, '#3A2C3E', null);
+      lit(B.sphere, e.wx, 1.05 + bob, e.wy, face, 0, 0, 0.85, 1.0, 0.85,
+          flash ? '#FFFFFF' : '#553A52', null);
+      const chg = 1 - clamp(e.shotCd / CONFIG.SPITTER_SHOT_COOLDOWN, 0, 1);
+      lit(B.sphereLo,
+          e.wx + Math.sin(face) * 0.36, 1.05 + bob, e.wy + Math.cos(face) * 0.36,
+          0, 0, 0, 0.18 + chg * 0.16, 0.18 + chg * 0.16, 0.18 + chg * 0.16,
+          PAL.blood, chg > 0.6 ? PAL.blood : '#4A1622');
+      if (chg > 0.75) glow(e.wx + Math.sin(face) * 0.4, 1.05 + bob, e.wy + Math.cos(face) * 0.4,
+                           0.9, PAL.blood, (chg - 0.75) * 1.4);
+
+    } else { /* mite */
+      const darting = e.darting > 0;
+      const y = 0.55 + bob + (darting ? 0.1 : 0);
+      lit(B.tetra, e.wx, y, e.wy, e.orbit * 1.5, e.t * 2, 0,
+          0.62, 0.62, 0.62, flash ? '#FFFFFF' : darting ? '#D94A66' : '#8E3149',
+          darting ? '#6B1D2C' : '#3A0F18');
+      glow(e.wx, y, e.wy, darting ? 1.5 : 1.0, PAL.blood, darting ? 0.42 : 0.22);
+    }
+    shadow3(e.wx, e.wy, e.r * 1.5);
+
+    /* health pip, only once damaged */
+    if (e.hp < e.maxHp) hpPips.push(e);
+  }
+}
+const hpPips = [];
+
+/* --- the Boss Bloom ----------------------------------------------------------- */
+function propsBoss() {
+  const Bs = Boss;
+  if (Bs.dead && Bs.deathAnim >= 1) return;
+  const da = Bs.dead ? ease(Bs.deathAnim) : 0;
+  const open = Bs.dead ? 1 : Bs.openness;
+  const flash = Bs.hitFlash > 0.15;
+
+  const stalkH = CONFIG3D.BOSS_HEIGHT * (0.8 + open * 0.2 + da * 0.35);
+  const sway = Math.sin(Bs.sway * 0.8) * 0.04;
+  lit(B.cyl, Bs.wx, 0, Bs.wy, 0, sway, 0, 0.55, stalkH, 0.55,
+      Bs.dead ? mixRgb(hexToRgb(PAL.bloom), RGB.ink, 0.4) : '#2B2340', null);
+
+  const hx = Bs.wx + sway * stalkH, hy = stalkH, hz = Bs.wy;
+
+  /* outer and inner petal rings, unfurling as it is forced open */
+  const droopOuter = lerp(-1.30, 0.18, open) + da * 0.25;
+  const droopInner = lerp(-1.10, -0.10, open) + da * 0.2;
+  const outerCol = flash ? '#FFFFFF' : Bs.dead ? PAL.accent
+        : rgbStr(mixRgb(hexToRgb('#2A2246'), RGB.accent, 0.18 + open * 0.42));
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * TAU + Bs.sway * 0.12;
+    lit(B.petal, hx, hy, hz, a, 0, droopOuter,
+        CONFIG3D.BOSS_PETAL * (1 + da * 0.5), CONFIG3D.BOSS_PETAL, CONFIG3D.BOSS_PETAL,
+        outerCol, Bs.dead ? '#0A5A66' : (open > 0.5 ? '#06333B' : null));
+  }
+  const innerCol = flash ? '#FFFFFF' : Bs.dead ? '#DFFFF6'
+        : rgbStr(mixRgb(hexToRgb('#3A2E58'), RGB.accent, 0.12 + open * 0.55));
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU - Bs.sway * 0.24 + 0.4;
+    lit(B.petal, hx, hy + 0.12, hz, a, 0, droopInner,
+        CONFIG3D.BOSS_PETAL * 0.55, CONFIG3D.BOSS_PETAL * 0.55, CONFIG3D.BOSS_PETAL * 0.55,
+        innerCol, Bs.dead ? '#2A7A85' : null);
+  }
+
+  const coreR = 0.5 + open * 0.28 + da * 0.4;
+  lit(B.sphere, hx, hy + 0.1, hz, 0, 0, 0, coreR, coreR, coreR,
+      Bs.dead ? '#FFFFFF' : (Bs.active ? PAL.accent : '#1E1A33'),
+      Bs.active || Bs.dead ? PAL.accent : mixRgb(hexToRgb(PAL.accent), [0,0,0], 1 - Bs.charge * 0.9));
+
+  addLight(hx, hy, hz, PAL.accent,
+           (Bs.dead ? 2.4 : 0.7 + open * 1.4), CONFIG3D.BOSS_LIGHT_RANGE * (1 + da));
+  glow(hx, hy + 0.1, hz, 4 + open * 3 + da * 8, PAL.accent, 0.45 + open * 0.25);
+  if (!Bs.dead) beam(Bs.wx, Bs.wy, CONFIG3D.BEAM_HEIGHT * 1.6 * Math.max(0.25, open), 1.25, PAL.accent, 0.40);
+
+  if (!Bs.dead) {
+    /* the danger ring, visible from a long way off — this is the warning */
+    const pulse = 0.30 + Math.sin(Bs.sway * 2) * 0.06 + Bs.charge * 0.5;
+    decal(Bs.wx, Bs.wy, CONFIG.BOSS_TRIGGER_RADIUS, PAL.accent, pulse, 1,
+          Bs.charge > 0 && !Bs.active ? Bs.charge : 1);
+
+    /* the rotating light-lash */
+    if (Bs.active && Bs.sweepState > 0) {
+      const wind = Bs.sweepState === 1;
+      const t = wind ? Bs.sweepT / CONFIG.BOSS_SWEEP_WINDUP : 1;
+      const len = CONFIG.BOSS_SWEEP_LENGTH;
+      const steps = 9;
+      for (let i = 1; i <= steps; i++) {
+        const r = (i / steps) * len;
+        const x = Bs.wx + Math.cos(Bs.sweepAngle) * r;
+        const z = Bs.wy + Math.sin(Bs.sweepAngle) * r;
+        const a = wind ? 0.10 + t * 0.16 : 0.42;
+        decal(x, z, 0.5 + r * CONFIG.BOSS_SWEEP_ARC * 0.5, PAL.accent, a, 0, 1);
+        if (!wind) glow(x, 0.5, z, 1.6, PAL.accent, 0.28);
+      }
+    }
+  }
+  shadow3(Bs.wx, Bs.wy, 1.6 * (1 - da * 0.6));
+}
+
+/* --- portal -------------------------------------------------------------------- */
+function propsPortal() {
+  if (!Portal.exists) return;
+  const a = ease(Portal.anim);
+  const n = 12;
+  for (let i = 0; i < n; i++) {
+    const ang = (i / n) * TAU + Game.time * 0.5;
+    lit(B.petal, Portal.wx, 0.5 + a * 1.6, Portal.wy, ang, 0, -0.15 - a * 0.5,
+        1.5 * a, 1.5 * a, 1.5 * a, i % 2 ? PAL.accent : PAL.bloom,
+        i % 2 ? '#0A6270' : '#2E6B39');
+  }
+  addLight(Portal.wx, 2.0, Portal.wy, '#FFFFFF', 2.6 * a, 26);
+  glow(Portal.wx, 1.6 + a, Portal.wy, 6 * a, '#FFFFFF', 0.7 * a);
+  beam(Portal.wx, Portal.wy, CONFIG3D.BEAM_HEIGHT * 2.4 * a, 1.7 * a, PAL.accent, 0.42 * a);
+  decal(Portal.wx, Portal.wy, CONFIG.PORTAL_RADIUS, PAL.accent, 0.6 * a, 1, 1);
+}
+
+/* --- the player ---------------------------------------------------------------- */
+function propsPlayer() {
+  const p = Player;
+  const face = Math.atan2(p.aimX, p.aimY);
+  const flick = p.iframes > 0 && Math.floor(p.iframes * 22) % 2 === 0;
+  const cloak = flick ? '#C8788C' : '#241F38';
+  const skin  = flick ? '#FFEBEE' : '#E4EFE6';
+  const bob = Math.sin(p.bob) * 0.05;
+
+  lit(B.cone, p.wx, 0.02 + bob, p.wy, face, 0, 0, 0.95, 1.15, 0.95, cloak, null);
+  lit(B.sphereLo, p.wx, 1.18 + bob, p.wy, face, 0, 0, 0.27, 0.27, 0.27, skin, null);
+  /* the seed-lantern she carries: the light she starts the run with */
+  const lx = p.wx + Math.cos(face) * 0.62, lz = p.wy - Math.sin(face) * 0.62;
+  lit(B.sphereLo, lx, 0.78 + bob, lz, 0, 0, 0, 0.16, 0.16, 0.16, '#EFFFF2', PAL.bloom);
+  addLight(lx, 0.55, lz, PAL.bloom, CONFIG3D.LANTERN_LIGHT, CONFIG3D.LANTERN_RANGE);
+  glow(lx, 0.78 + bob, lz, 1.5, PAL.bloom, 0.4);
+  shadow3(p.wx, p.wy, 0.55);
+}
+
+/* --- projectiles and particles --------------------------------------------------- */
+function propsBolts() {
+  for (const b of bolts) {
+    lit(B.sphereLo, b.wx, CONFIG3D.BOLT_HEIGHT, b.wy, 0, 0, 0, 0.26, 0.26, 0.26,
+        '#DFFFE8', PAL.bloom);
+    glow(b.wx, CONFIG3D.BOLT_HEIGHT, b.wy, 1.1, PAL.bloom, 0.45);
+  }
+  for (const b of enemyBolts) {
+    const petal = b.kind === 'petal';
+    const col = petal ? PAL.accent : PAL.blood;
+    lit(B.sphereLo, b.wx, CONFIG3D.BOLT_HEIGHT, b.wy, b.spin, b.spin * 0.7, 0,
+        0.3, 0.3, 0.3, petal ? '#EAFFFF' : '#FF9BAE', col);
+    glow(b.wx, CONFIG3D.BOLT_HEIGHT, b.wy, 1.3, col, 0.42);
+  }
+}
+
+function propsParticles() {
+  /* Additive billboards are the most expensive thing in the frame — each one is
+     a big alpha-blended quad. Far particles contribute almost nothing on screen,
+     so they are dropped outright rather than drawn and discarded per fragment. */
+  const maxD = CONFIG3D.PARTICLE_CULL_DIST;
+  let drawn = 0;
+  for (const p of particles) {
+    if (drawn >= CONFIG3D.MAX_PARTICLE_GLOWS) break;
+    const dx = p.wx - Cam3.x, dz = p.wy - Cam3.z;
+    if (dx * dx + dz * dz > maxD * maxD) continue;
+    const t = clamp(p.life / p.maxLife, 0, 1);
+    glow(p.wx, 0.5 + p.z * 0.6 + (1 - t) * 0.3, p.wy,
+         p.size * 0.14 * (0.4 + t * 0.6), p.color, t * 0.6);
+    drawn++;
+  }
+}
+
+/* a soft blob shadow — the ground is flat, so this reads as well as a shadow map
+   and costs nothing */
+function shadow3(x, z, r) {
+  decal(x, z, r, '#05040A', 0.42, 0, 1);
+}
+/* ============================================================================
+   HUD — vine-wrapped, botanical, drawn entirely in canvas
+   ========================================================================== */
+
+function txt(s, x, y, size, color, align, weight) {
+  ctx.font = (weight || 600) + ' ' + size + 'px "Avenir Next", "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = color;
+  ctx.fillText(s, x, y);
+  ctx.textAlign = 'left';
+}
+function txtL(s, x, y, size, color, align, spacing) {
+  ctx.font = '600 ' + size + 'px "Avenir Next", "Segoe UI", system-ui, sans-serif';
+  const sp = spacing === undefined ? size * 0.18 : spacing;
+  let total = 0;
+  for (const ch of s) total += ctx.measureText(ch).width + sp;
+  total -= sp;
+  let cx = align === 'center' ? x - total / 2 : align === 'right' ? x - total : x;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  for (const ch of s) { ctx.fillText(ch, cx, y); cx += ctx.measureText(ch).width + sp; }
+  return total;
+}
+
+/* --- organic vine border for panels ------------------------------------------- */
+function vinePanel(x, y, w, h, alpha, tint) {
+  ctx.fillStyle = 'rgba(13,11,22,' + (alpha === undefined ? 0.72 : alpha) + ')';
+  ctx.beginPath();
+  const r = 6;
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath(); ctx.fill();
+
+  /* a vine that wanders the top and bottom edge instead of a straight rule */
+  const col = tint || PAL.bloom;
+  ctx.strokeStyle = hexA(col, 0.30);
+  ctx.lineWidth = 1.4;
+  for (const [ey, dir] of [[y, -1], [y + h, 1]]) {
+    ctx.beginPath();
+    ctx.moveTo(x + 4, ey);
+    const segs = Math.max(3, Math.floor(w / 26));
+    for (let i = 0; i < segs; i++) {
+      const x0 = x + 4 + (w - 8) * (i / segs);
+      const x1 = x + 4 + (w - 8) * ((i + 1) / segs);
+      ctx.quadraticCurveTo((x0 + x1) / 2, ey + dir * 3.2 * (i % 2 ? 1 : -1), x1, ey);
+    }
+    ctx.stroke();
+  }
+  /* leaf nubs at the corners */
+  ctx.fillStyle = hexA(col, 0.34);
+  for (const [lx, ly, rot] of [[x + 5, y + 2, -0.7], [x + w - 5, y + h - 2, 2.4]]) {
+    ctx.save(); ctx.translate(lx, ly); ctx.rotate(rot);
+    ctx.beginPath(); ctx.ellipse(4, 0, 5, 2.2, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* --- botanical item icons ------------------------------------------------------ */
+function itemIcon(id, cx, cy, s, color) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = color; ctx.fillStyle = color;
+  ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  if (id === 'thorn') {            /* a barbed seed */
+    ctx.beginPath(); ctx.ellipse(0, 1, s * 0.34, s * 0.5, 0, 0, TAU); ctx.fill();
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + (i - 2) * 0.5;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a) * s * 0.3, Math.sin(a) * s * 0.42 + 1);
+      ctx.lineTo(Math.cos(a) * s * 0.72, Math.sin(a) * s * 0.86 + 1); ctx.stroke();
+    }
+  } else if (id === 'wind') {      /* a root with running lines */
+    ctx.beginPath(); ctx.moveTo(-s * 0.1, -s * 0.6);
+    ctx.quadraticCurveTo(s * 0.2, 0, -s * 0.1, s * 0.6); ctx.stroke();
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath(); ctx.moveTo(-s * 0.7, i * s * 0.34); ctx.lineTo(-s * 0.25, i * s * 0.34); ctx.stroke();
+    }
+  } else if (id === 'nectar') {    /* a husk with a drop */
+    ctx.beginPath(); ctx.arc(0, s * 0.12, s * 0.52, 0.15, Math.PI - 0.15); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -s * 0.62);
+    ctx.quadraticCurveTo(s * 0.3, -s * 0.1, 0, s * 0.06);
+    ctx.quadraticCurveTo(-s * 0.3, -s * 0.1, 0, -s * 0.62); ctx.fill();
+  } else if (id === 'pollen') {    /* a burst */
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.22, 0, TAU); ctx.fill();
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * TAU;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * s * 0.38, Math.sin(a) * s * 0.38);
+      ctx.lineTo(Math.cos(a) * s * 0.78, Math.sin(a) * s * 0.78); ctx.stroke();
+    }
+  } else if (id === 'quick') {     /* a coiled vine */
+    ctx.beginPath();
+    for (let i = 0; i <= 26; i++) {
+      const t = i / 26, a = t * TAU * 1.5, r = s * 0.18 + t * s * 0.5;
+      const px = Math.cos(a) * r, py = Math.sin(a) * r;
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    }
+    ctx.stroke();
+  } else {                          /* duskhusk — a shut bud */
+    ctx.beginPath();
+    ctx.moveTo(0, -s * 0.7);
+    ctx.quadraticCurveTo(s * 0.5, -s * 0.1, 0, s * 0.6);
+    ctx.quadraticCurveTo(-s * 0.5, -s * 0.1, 0, -s * 0.7);
+    ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, -s * 0.6); ctx.lineTo(0, s * 0.5); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* --- flower glyph for the beacon tracker ---------------------------------------- */
+function flowerGlyph(cx, cy, s, color, lit, progress) {
+  ctx.save(); ctx.translate(cx, cy);
+  if (!lit && progress > 0) {
+    ctx.strokeStyle = hexA(color, 0.9); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.95, -Math.PI / 2, -Math.PI / 2 + progress * TAU); ctx.stroke();
+  }
+  const open = lit ? 1 : 0.28;
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * TAU - Math.PI / 2;
+    ctx.save(); ctx.rotate(a);
+    ctx.fillStyle = lit ? color : 'rgba(120,128,124,0.55)';
+    ctx.beginPath();
+    ctx.ellipse(s * 0.38 * open + s * 0.12, 0, s * 0.36 * (0.6 + open * 0.4), s * 0.2, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.fillStyle = lit ? '#FFFFFF' : 'rgba(90,96,94,1)';
+  ctx.beginPath(); ctx.arc(0, 0, s * 0.2, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+/* ============================================================================
+   THE HUD
+   ========================================================================== */
+function drawHUD() {
+  const M = 22;
+
+  /* --- vine-wrapped vitality bar ------------------------------------------ */
+  const bw = 250, bh = 15, bx = M, by = VH - M - bh;
+  const frac = clamp(Player.hp / Player.maxHp, 0, 1);
+
+  ctx.fillStyle = 'rgba(13,11,22,0.8)';
+  ctx.fillRect(bx - 3, by - 3, bw + 6, bh + 6);
+
+  /* the red beneath */
+  ctx.fillStyle = 'rgba(60,20,30,0.9)';
+  ctx.fillRect(bx, by, bw, bh);
+  const grad = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  grad.addColorStop(0, '#8E2038'); grad.addColorStop(1, PAL.blood);
+  ctx.fillStyle = grad;
+  ctx.fillRect(bx, by, bw * frac, bh);
+
+  /* the vines: full and green at high HP, sparse and withered at low */
+  const vineCount = Math.max(2, Math.round(3 + frac * 7));
+  const vineCol = mixRgb(hexToRgb('#6B6455'), RGB.bloom, frac);
+  ctx.strokeStyle = rgbaStr(vineCol, 0.45 + frac * 0.45);
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(bx, by + bh * 0.5);
+  for (let i = 0; i <= vineCount * 2; i++) {
+    const t0 = i / (vineCount * 2), t1 = (i + 1) / (vineCount * 2);
+    ctx.quadraticCurveTo(bx + bw * (t0 + t1) / 2, by + (i % 2 ? -bh * 0.42 : bh * 1.42),
+                         bx + bw * t1, by + bh * 0.5);
+  }
+  ctx.stroke();
+  /* leaves — they fall off as she bleeds */
+  for (let i = 0; i < vineCount; i++) {
+    const t = (i + 0.5) / vineCount;
+    if (t > frac + 0.12) continue;
+    const lx = bx + bw * t, ly = by + (i % 2 ? -bh * 0.3 : bh * 1.3);
+    ctx.save(); ctx.translate(lx, ly); ctx.rotate(i % 2 ? -0.6 : 0.6);
+    ctx.fillStyle = rgbaStr(vineCol, 0.55 + frac * 0.4);
+    ctx.beginPath(); ctx.ellipse(4, 0, 6, 2.6, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+  ctx.strokeStyle = rgbaStr(vineCol, 0.5); ctx.lineWidth = 1;
+  ctx.strokeRect(bx - 3, by - 3, bw + 6, bh + 6);
+  txtL(Math.ceil(Player.hp) + ' / ' + Math.round(Player.maxHp), bx, by - 12, 11, hexA(PAL.bone, 0.75), 'left', 1.2);
+
+  /* --- seed / silver counter ---------------------------------------------- */
+  const scx = bx + 6, scy = by - 40;
+  ctx.fillStyle = PAL.silver;
+  ctx.beginPath(); ctx.ellipse(scx, scy, 5, 6.4, 0, 0, TAU); ctx.fill();
+  ctx.strokeStyle = hexA(PAL.silver, 0.5); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(scx, scy - 6); ctx.lineTo(scx, scy + 6); ctx.stroke();
+  txt(String(Player.silver), scx + 13, scy + 6, 19, PAL.silver);
+  txtL('SILVER', scx + 13 + ctx.measureText(String(Player.silver)).width + 10, scy + 5, 9, hexA(PAL.silver, 0.45), 'left', 1.6);
+
+  /* --- items: icon AND what it does, or the symbol means nothing ----------- */
+  if (Player.items.length) {
+    const iy = by - 86;
+    for (let i = 0; i < Player.items.length; i++) {
+      const ix = bx + 26 + i * 68;
+      ctx.fillStyle = 'rgba(13,11,22,0.6)';
+      ctx.beginPath(); ctx.arc(ix, iy, 13, 0, TAU); ctx.fill();
+      ctx.strokeStyle = hexA(PAL.bloom, 0.3); ctx.lineWidth = 1; ctx.stroke();
+      itemIcon(Player.items[i].id, ix, iy, 15, PAL.bloom);
+      txtL(Player.items[i].stat || '', ix, iy + 24, 8, hexA(PAL.bloom, 0.6), 'center', 1);
+    }
+  }
+
+  /* --- the clock ------------------------------------------------------------- */
+  const tLeft = Math.max(0, Game.timeLeft);
+  const urgent = tLeft < 15;
+  const tCol = Game.dusk ? PAL.blood : urgent ? '#E8A48B' : PAL.bone;
+  const mins = Math.floor(tLeft / 60), secs = Math.floor(tLeft % 60);
+  /* Dusk is now the last DUSK_WINDOW_SECONDS of the same minute rather than a
+     separate phase after it, so the clock keeps counting instead of reading
+     'DUSK' — the player still needs to know how long is left. */
+  const clockStr = mins + ':' + String(secs).padStart(2, '0');
+  const pulse = urgent && !Game.dusk ? 1 + Math.sin(Game.time * 9) * 0.05 : 1;
+  ctx.save();
+  ctx.translate(VW / 2, M + 30); ctx.scale(pulse, pulse);
+  txtL(clockStr, 0, 0, 34, tCol, 'center', 3);
+  ctx.restore();
+  if (Game.dusk) {
+    const g = clamp(tLeft / CONFIG.DUSK_WINDOW_SECONDS, 0, 1);
+    const w = 150;
+    ctx.fillStyle = 'rgba(13,11,22,0.7)';
+    ctx.fillRect(VW / 2 - w / 2, M + 40, w, 4);
+    ctx.fillStyle = PAL.blood;
+    ctx.fillRect(VW / 2 - w / 2, M + 40, w * g, 4);
+    txtL('THE DARK IS RECLAIMING THE GROUND', VW / 2, M + 60, 10, hexA(PAL.blood, 0.9), 'center', 2);
+  } else {
+    txtL('BEFORE THE LIGHT FADES', VW / 2, M + 48, 9, hexA(PAL.bone, 0.34), 'center', 2.4);
+  }
+
+  /* --- ground reclaimed -------------------------------------------------------
+     NOT a completion meter. Three beacons and the Boss Bloom can only ever reach
+     about 42% of the plateau; the rest is out of range of any light in the run.
+     The bar is drawn at true scale — it used to be multiplied by 1.7, which made
+     it disagree with its own number — and a tick marks this seed's ceiling so a
+     perfect run doesn't read as unfinished. */
+  const pct = bloomPercent();
+  const pw = 180, px = VW - M - pw, py = M + 26;
+  txtL('GROUND RECLAIMED', VW - M, M + 12, 9, hexA(PAL.bloom, 0.45), 'right', 2.4);
+  ctx.fillStyle = 'rgba(13,11,22,0.75)';
+  ctx.fillRect(px - 2, py - 2, pw + 4, 10);
+  ctx.fillStyle = hexA(PAL.bloom, 0.85);
+  ctx.fillRect(px, py, pw * clamp(pct, 0, 1), 6);
+  /* the ceiling tick: everything this plateau can be made to light */
+  const cw = pw * clamp(World.ceiling, 0, 1);
+  ctx.fillStyle = hexA(PAL.bone, 0.38);
+  ctx.fillRect(px + cw, py - 4, 1.5, 14);
+  /* vine along the top of the meter */
+  ctx.strokeStyle = hexA(PAL.bloom, 0.35); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(px, py - 3);
+  for (let i = 0; i < 8; i++) {
+    const x0 = px + pw * (i / 8), x1 = px + pw * ((i + 1) / 8);
+    ctx.quadraticCurveTo((x0 + x1) / 2, py - 3 + (i % 2 ? 3 : -3), x1, py - 3);
+  }
+  ctx.stroke();
+  txt(Math.round(pct * 100) + '%', VW - M, py + 28, 15, hexA(PAL.bloom, 0.9), 'right');
+  /* say the ceiling out loud, so 43% never reads as a job half done */
+  txtL(Math.round(World.ceiling * 100) + '% IS ALL THERE IS', VW - M, py + 42, 7.5,
+       hexA(PAL.bone, 0.32), 'right', 1.4);
+
+  /* --- beacon tracker -------------------------------------------------------- */
+  const trackY = py + 70;
+  for (let i = 0; i < flowers.length; i++) {
+    const f = flowers[i];
+    const T = FLOWER_TYPES[f.type];
+    const gx = VW - M - 38 - (flowers.length - 1 - i) * 76;
+    flowerGlyph(gx, trackY, 13, T.petal, f.bloomed, f.progress);
+    /* the one-word promise, so the tracker says what each beacon is FOR */
+    txtL(T.effect, gx, trackY + 26, 8,
+         hexA(f.bloomed ? T.petal : PAL.bone, f.bloomed ? 0.85 : 0.3), 'center', 1.2);
+  }
+  txtL('BEACONS', VW - M, trackY + 44, 9, hexA(PAL.bone, 0.34), 'right', 2.2);
+
+  /* --- run seed -------------------------------------------------------------- */
+  if (CONFIG.SHOW_SEED) {
+    txtL('SEED ' + Game.seed, M, M + 14, 9, hexA(PAL.bone, 0.26), 'left', 1.8);
+  }
+  txtL('WASD MOVE  ·  AIM + HOLD CLICK TO FIRE  ·  [E] CACHE  ·  [R] RESTART  ·  [M] MUTE',
+    VW / 2, VH - 16, 9, hexA(PAL.bone, 0.22), 'center', 2);
+
+    /* --- notice cards ---------------------------------------------------------- */
+  drawCards();
+
+/* --- crosshair -------------------------------------------------------------- */
+  drawCrosshair();
+}
+
+/* ============================================================================
+   NOTICE CARDS — what you just got, and what it does
+
+   A cache used to hand you a symbol in the corner. If you had never played, that
+   symbol meant nothing: no name, no effect, nothing to learn from. Every grant
+   now raises a card that names the thing and spells out what changed.
+   ========================================================================== */
+function drawCards() {
+  if (!cards.length) return;
+  const c = cards[0];
+  const t = c.life / c.maxLife;
+  /* slide up on entry, fade on exit */
+  const inA = clamp((1 - t) * 6, 0, 1);
+  const outA = clamp(t * 4, 0, 1);
+  const a = Math.min(inA, outA);
+  if (a <= 0.01) return;
+
+  const w = 330, h = c.lines.length > 1 ? 108 : 88;
+  const x = VW / 2 - w / 2;
+  const y = VH * 0.60 + (1 - inA) * 14;
+
+  ctx.save();
+  ctx.globalAlpha = a;
+  vinePanel(x, y, w, h, 0.88, c.color);
+
+  /* the icon: a cache item draws its botanical glyph, a beacon draws its flower */
+  const ix = x + 36, iy = y + h / 2;
+  ctx.fillStyle = 'rgba(13,11,22,0.55)';
+  ctx.beginPath(); ctx.arc(ix, iy, 20, 0, TAU); ctx.fill();
+  ctx.strokeStyle = hexA(c.color, 0.35); ctx.lineWidth = 1; ctx.stroke();
+  if (c.iconId) itemIcon(c.iconId, ix, iy, 24, c.color);
+  else if (c.glyph) flowerGlyph(ix, iy, 17, c.color, true, 1);
+
+  const tx = x + 68;
+  txtL(c.title, tx, y + 28, 15, c.color, 'left', 3);
+  txt(c.sub, tx, y + 46, 11, hexA(PAL.bone, 0.6), 'left', 400);
+  for (let i = 0; i < c.lines.length; i++) {
+    txt('·  ' + c.lines[i], tx, y + 64 + i * 15, 11, hexA(PAL.bone, 0.85), 'left', 600);
+  }
+  ctx.restore();
+}
+
+function drawCrosshair() {
+  const x = Input.mx, y = Input.my;
+  /* the reticle closes when you're firing, so the button state is visible */
+  const firing = Player.firing;
+  const inner = firing ? 3.5 : 5, outer = firing ? 9 : 11;
+  ctx.strokeStyle = hexA(PAL.bloom, firing ? 0.95 : 0.5);
+  ctx.lineWidth = firing ? 1.8 : 1.4;
+  ctx.beginPath();
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * TAU + Math.PI / 4;
+    ctx.moveTo(x + Math.cos(a) * inner, y + Math.sin(a) * inner);
+    ctx.lineTo(x + Math.cos(a) * outer, y + Math.sin(a) * outer);
+  }
+  ctx.stroke();
+  ctx.fillStyle = hexA(PAL.bloom, firing ? 1 : 0.7);
+  ctx.beginPath(); ctx.arc(x, y, firing ? 2.2 : 1.6, 0, TAU); ctx.fill();
+}
+
+/* ============================================================================
+   SCREENS
+   ========================================================================== */
+function drawTitleFlower(cx, cy, s, t) {
+  ctx.save(); ctx.translate(cx, cy);
+  const open = 0.55 + Math.sin(t * 0.9) * 0.12;
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, s * 3.4);
+  g.addColorStop(0, hexA(PAL.bloom, 0.22)); g.addColorStop(1, hexA(PAL.bloom, 0));
+  ctx.fillStyle = g; ctx.fillRect(-s * 3.4, -s * 3.4, s * 6.8, s * 6.8);
+  ctx.globalCompositeOperation = 'source-over';
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * TAU + t * 0.12;
+    ctx.save(); ctx.rotate(a);
+    ctx.fillStyle = hexA(PAL.bloom, 0.42);
+    ctx.beginPath();
+    ctx.ellipse(s * 0.66 * open + s * 0.24, 0, s * 0.80, s * 0.22, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * TAU - t * 0.2;
+    ctx.save(); ctx.rotate(a);
+    ctx.fillStyle = hexA(PAL.accent, 0.55);
+    ctx.beginPath();
+    ctx.ellipse(s * 0.3, 0, s * 0.4, s * 0.18, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.fillStyle = '#EFFFF4';
+  ctx.beginPath(); ctx.arc(0, 0, s * 0.2, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawTitle() {
+  const t = performance.now() / 1000;
+  /* ground */
+  const g = ctx.createLinearGradient(0, 0, 0, VH);
+  g.addColorStop(0, PAL.ink);
+  g.addColorStop(0.62, PAL.base);
+  g.addColorStop(1, '#0A1A0F');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH);
+
+  /* a faint band of far-off bloom along the horizon */
+  const hz = VH * 0.62;
+  const hg = ctx.createLinearGradient(0, hz - 150, 0, hz + 30);
+  hg.addColorStop(0, hexA(PAL.bloom, 0));
+  hg.addColorStop(0.75, hexA(PAL.bloom, 0.055));
+  hg.addColorStop(1, hexA(PAL.bloom, 0));
+  ctx.fillStyle = hg;
+  ctx.fillRect(0, hz - 150, VW, 180);
+
+  /* distant monolith silhouettes, all standing on the same ground line */
+  for (let i = 0; i < 18; i++) {
+    const h = hash2(i, 7), h2 = hash2(i, 13);
+    const x = (i / 18) * VW + h * 46 - 22;
+    const w = 20 + h * 46;
+    const ht = 70 + h2 * 280;
+    ctx.fillStyle = 'rgba(31,22,40,' + (0.55 + h * 0.35) + ')';
+    ctx.fillRect(x, hz - ht, w, ht + 60);
+    /* a cold rim on the lit edge so they read as stone, not bars */
+    ctx.fillStyle = 'rgba(96,104,132,' + (0.06 + h2 * 0.07) + ')';
+    ctx.fillRect(x, hz - ht, Math.max(2, w * 0.16), ht + 60);
+    ctx.fillStyle = 'rgba(150,162,190,' + (0.05 + h * 0.06) + ')';
+    ctx.fillRect(x, hz - ht, w, 2.5);
+  }
+  /* a couple of distant beacons cutting through */
+  for (const [bx, bs] of [[VW * 0.18, 0.7], [VW * 0.82, 0.5], [VW * 0.63, 0.35]]) {
+    const by = VH * 0.6;
+    ctx.globalCompositeOperation = 'lighter';
+    const bg = ctx.createLinearGradient(bx, by - 260 * bs, bx, by);
+    bg.addColorStop(0, hexA(PAL.bloom, 0)); bg.addColorStop(1, hexA(PAL.bloom, 0.18 * bs));
+    ctx.fillStyle = bg;
+    ctx.beginPath();
+    ctx.moveTo(bx - 3, by - 260 * bs); ctx.lineTo(bx + 3, by - 260 * bs);
+    ctx.lineTo(bx + 16 * bs, by); ctx.lineTo(bx - 16 * bs, by);
+    ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.fillStyle = 'rgba(13,11,22,0.55)';
+  ctx.fillRect(0, 0, VW, VH);
+
+  drawTitleFlower(VW / 2, VH * 0.31, Math.min(VW, VH) * 0.10, t);
+
+  txtL('DUSKPETAL', VW / 2, VH * 0.31 + Math.min(VW, VH) * 0.19, Math.min(54, VW * 0.075), PAL.bone, 'center', 12);
+  txtL('SIXTY SECONDS BEFORE THE LIGHT FADES', VW / 2, VH * 0.31 + Math.min(VW, VH) * 0.19 + 26,
+    11, hexA(PAL.bloom, 0.55), 'center', 4);
+
+  const lines = [
+    ['WASD', 'move'],
+    ['MOUSE', 'aim'],
+    ['HOLD LEFT CLICK', 'fire — the gun does nothing on its own'],
+    ['E', 'open a seed cache'],
+    ['HOLD A BEACON', 'stand inside the ring until it opens'],
+    ['THE BOSS BLOOM', 'awake from the first second. it does not wait.'],
+  ];
+  const ly = VH * 0.63;
+  for (let i = 0; i < lines.length; i++) {
+    const y = ly + i * 24;
+    txtL(lines[i][0], VW / 2 - 18, y, 11, hexA(PAL.bloom, 0.8), 'right', 2);
+    txt(lines[i][1], VW / 2 + 18, y, 13, hexA(PAL.bone, 0.6), 'left', 400);
+  }
+  const blink = 0.55 + Math.sin(t * 3.2) * 0.45;
+  txtL('PRESS  SPACE', VW / 2, VH - 62, 15, hexA(PAL.bone, blink), 'center', 5);
+  txtL('R RESTART   ·   M MUTE   ·   ?seed=NUMBER TO REPLAY A RUN',
+    VW / 2, VH - 30, 9, hexA(PAL.bone, 0.22), 'center', 2);
+}
+
+function drawEndScreen() {
+  const won = Game.state === STATE.WIN;
+  ctx.fillStyle = won ? 'rgba(10,26,16,0.72)' : 'rgba(13,11,22,0.82)';
+  ctx.fillRect(0, 0, VW, VH);
+
+  const cx = VW / 2, cy = VH / 2;
+  const t = performance.now() / 1000;
+
+  if (won) {
+    drawTitleFlower(cx, cy - 120, 46, t);
+    txtL('THE PLATEAU BLOOMS', cx, cy - 30, 34, PAL.bone, 'center', 8);
+    txtL('CLEARED IN ' + Game.clearTime.toFixed(2) + 's', cx, cy + 6, 14, PAL.bloom, 'center', 3);
+    const delta = Game.clearTime - CONFIG.TARGET_CLEAR_SECONDS;
+    txtL(delta <= 0 ? 'UNDER TARGET BY ' + Math.abs(delta).toFixed(1) + 's'
+                    : 'TARGET IS ' + CONFIG.TARGET_CLEAR_SECONDS + 's — ' + delta.toFixed(1) + 's OVER',
+      cx, cy + 28, 10, hexA(PAL.bone, 0.5), 'center', 2);
+  } else {
+    const CARDS = {
+      dusk:      ['THE DARK TOOK IT BACK', 'you had not bloomed enough ground to stand on'],
+      bossFight: ['IT OUTLASTED YOU',      'the Boss Bloom wilts slower than you do'],
+      charge:    ['IT WOKE FIRST',         'the charge-up is a warning, not a countdown you can win'],
+      afterBoss: ['SO CLOSE',              'the portal was open. you never reached it.'],
+      cold:      ['YOU WILTED',            'not one beacon was lit when you fell'],
+      route:     ['YOU WILTED',            'the plateau was still mostly dark'],
+    };
+    const card = CARDS[Game.deathContext] || CARDS.route;
+    txtL(card[0], cx, cy - 30, 32, PAL.blood, 'center', 8);
+    txtL(card[1], cx, cy + 4, 12, hexA(PAL.bone, 0.5), 'center', 2);
+  }
+
+  /* run readout */
+  const stats = [
+    ['GROUND RECLAIMED', Math.round(bloomPercent() * 100) + '% of ' + Math.round(World.ceiling * 100) + '% possible'],
+    ['BEACONS OPENED', flowers.filter(f => f.bloomed).length + ' / ' + flowers.length],
+    ['CACHES OPENED',  String(chestsOpened)],
+    ['SILVER GATHERED', String(Player.totalSilver)],
+    ['BOSS BLOOM',     Boss.dead ? 'BLOOMED' : Boss.active ? Math.round((1 - Boss.hp / Boss.maxHp) * 100) + '% WILTED' : 'UNTOUCHED'],
+    ['SEED',           String(Game.seed)],
+  ];
+  const sy = cy + 62;
+  for (let i = 0; i < stats.length; i++) {
+    const y = sy + i * 21;
+    txtL(stats[i][0], cx - 14, y, 10, hexA(PAL.bone, 0.4), 'right', 2);
+    txtL(stats[i][1], cx + 14, y, 11, hexA(PAL.bloom, 0.85), 'left', 1.6);
+  }
+  if (Game.best !== null) {
+    txtL('BEST THIS SESSION  ' + Game.best.toFixed(2) + 's', cx, sy + stats.length * 21 + 18,
+      10, hexA(PAL.accent, 0.6), 'center', 2);
+  }
+  const blink = 0.5 + Math.sin(t * 3.4) * 0.4;
+  txtL('PRESS  R  TO GO AGAIN', cx, VH - 48, 14, hexA(PAL.bone, blink), 'center', 5);
+}
+
+function drawDebug() {
+  const lines = [
+    'fps ' + fpsDisplay.toFixed(0),
+    'enemies ' + enemies.length + '  particles ' + particles.length,
+    'bloom ' + (bloomPercent() * 100).toFixed(1) + '%',
+    'player ' + Player.wx.toFixed(1) + ',' + Player.wy.toFixed(1),
+    'boss ' + Boss.wx.toFixed(1) + ',' + Boss.wy.toFixed(1) + '  d=' + dist(Player.wx, Player.wy, Boss.wx, Boss.wy).toFixed(1),
+    'dmg x' + Player.dmgMult.toFixed(2) + '  rate x' + Player.rateMult.toFixed(2) + '  spd x' + Player.speedMult.toFixed(2),
+  ];
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(10, VH - 130, 250, 118);
+  for (let i = 0; i < lines.length; i++) {
+    txt(lines[i], 18, VH - 110 + i * 16, 11, PAL.bone, 'left', 400);
+  }
+}
+/* ============================================================================
+   HUD — a 2D overlay canvas on top of the WebGL canvas.
+
+   The vine health bar, seed counter, botanical item icons, beacon tracker and
+   end cards are the SAME code as the isometric build. What is new is what
+   third person takes away: you can no longer see the whole plateau, so world
+   objectives have to be projected onto the screen as waypoints.
+   ========================================================================== */
+
+let hudCv, VW = 0, VH = 0, DPR = 1;
+let ctx = null;
+let Z = 1;                       // the 2D HUD code sizes labels off this
+let fpsDisplay = 60;
+let legendTimer = 0;
+
+/* stubs so the shared simulation parses — in 3D, Game.intent is always set,
+   so these code paths never actually run */
+const Input = { mx: 0, my: 0, down: false, keys: {},
+  key() { return false; }, pressed() { return false; }, clearFrame() {} };
+function screenToWorld() { return [Player.wx, Player.wy]; }
+function screenDirToWorld() { return [0, 0]; }
+
+function initHud(canvas) {
+  hudCv = canvas;
+  ctx = hudCv.getContext('2d');
+}
+
+function resizeHud() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  VW = hudCv.clientWidth || window.innerWidth;
+  VH = hudCv.clientHeight || window.innerHeight;
+  hudCv.width = Math.round(VW * DPR);
+  hudCv.height = Math.round(VH * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  Input.mx = VW / 2; Input.my = VH / 2;
+}
+
+/* --- projection helper -------------------------------------------------------- */
+let ViewProj = m4();
+function projectToScreen(wx, wy, wz) {
+  const p = m4project(ViewProj, wx, wy, wz);
+  if (p[3] <= 0.001) return null;                 // behind the camera
+  return [(p[0] * 0.5 + 0.5) * VW, (1 - (p[1] * 0.5 + 0.5)) * VH, p[3]];
+}
+
+/* --- the frame ----------------------------------------------------------------- */
+function renderHud() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, VW, VH);
+
+  drawEnemyPips();
+  drawWaypoints();
+  drawBossBar();
+  drawHurtVignette();
+  drawHUD();
+  drawFloaters3D();
+  drawBeaconPrompt();
+  drawInteractPrompt();
+  drawLegend();
+  drawCamModeFlash();
+  if (Game.state === STATE.WIN || Game.state === STATE.LOSE) drawEndScreen();
+  else if (Game.paused) drawPauseCard();
+  if (CONFIG.SHOW_DEBUG) drawDebug();
+}
+
+/* the 2D build drew this into the world; in 3D it belongs on the overlay */
+function drawHurtVignette() {
+  if (Player.hurtFlash > 0.01) {
+    /* 0.22 read as a full red screen over ground this dark */
+    ctx.fillStyle = hexA(PAL.blood, Player.hurtFlash * 0.12);
+    ctx.fillRect(0, 0, VW, VH);
+  }
+  const low = 1 - clamp(Player.hp / Player.maxHp, 0, 1);
+  if (low > 0.55) {
+    const g = ctx.createRadialGradient(VW/2, VH/2, Math.min(VW,VH)*0.25,
+                                       VW/2, VH/2, Math.max(VW,VH)*0.62);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, hexA(PAL.blood, (low - 0.55) * 0.55));
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, VW, VH);
+  }
+}
+
+/* --- enemy health pips, projected ---------------------------------------------- */
+function drawEnemyPips() {
+  for (const e of hpPips) {
+    const s = projectToScreen(e.wx, CONFIG3D.PIP_HEIGHT, e.wy);
+    if (!s || s[2] > 34) continue;
+    const w = Math.max(14, 46 / (1 + s[2] * 0.05));
+    const h = Math.max(2, w * 0.10);
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(s[0] - w/2 - 1, s[1] - 1, w + 2, h + 2);
+    ctx.fillStyle = PAL.blood;
+    ctx.fillRect(s[0] - w/2, s[1], w * clamp(e.hp / e.maxHp, 0, 1), h);
+  }
+  hpPips.length = 0;
+}
+
+/* --- waypoints ------------------------------------------------------------------
+   Third person costs you the map overview the 60-second route depended on, so
+   every objective gets a marker: on-screen when visible, pinned to the screen
+   edge with a heading arrow when not, and always labelled with a distance. */
+function drawWaypoints() {
+  const targets = [];
+  for (const f of flowers) {
+    if (f.bloomed) continue;
+    const T = FLOWER_TYPES[f.type];
+    targets.push({ x: f.wx, z: f.wy, y: CONFIG3D.FLOWER_HEIGHT + 1.0,
+                   c: T.petal, label: T.name + '  ·  ' + T.effect, prog: f.progress });
+  }
+  if (!Boss.dead) {
+    /* once it is awake the bar at the top carries its name, so the waypoint
+       drops to a bare heading marker rather than stacking text on the clock */
+    targets.push({ x: Boss.wx, z: Boss.wy, y: CONFIG3D.BOSS_HEIGHT + 2.2,
+                   c: PAL.accent, label: Boss.active ? '' : 'BOSS BLOOM',
+                   prog: Boss.active ? -1 : Boss.charge, minor: Boss.active });
+  } else if (Portal.exists) {
+    targets.push({ x: Portal.wx, z: Portal.wy, y: 3.0, c: '#FFFFFF', label: 'THE WAY OUT', prog: -1 });
+  }
+  for (const c of chests) {
+    if (c.opened) continue;
+    targets.push({ x: c.wx, z: c.wy, y: 1.4, c: PAL.silver,
+                   label: Player.silver >= c.cost ? 'CACHE ' + c.cost : String(c.cost),
+                   prog: -1, minor: true });
+  }
+
+  const pad = 52;
+  for (const t of targets) {
+    const d = dist(Player.wx, Player.wy, t.x, t.z);
+    if (t.minor && d > 26) continue;
+    const s = projectToScreen(t.x, t.y, t.z);
+    const onScreen = s && s[0] > pad && s[0] < VW - pad && s[1] > pad && s[1] < VH - pad;
+
+    if (onScreen) {
+      drawMarker(s[0], s[1], t, d, false, 0);
+    } else {
+      /* pin to the edge, pointing the way */
+      let dx, dy;
+      if (s) { dx = s[0] - VW/2; dy = s[1] - VH/2; }
+      else {
+        const p = projectToScreen(t.x, t.y, t.z);
+        void p;
+        /* behind the camera: derive a heading from the world vector instead */
+        const vx = t.x - Cam3.x, vz = t.z - Cam3.z;
+        const fx = Math.sin(Cam3.yaw), fz = Math.cos(Cam3.yaw);
+        const rx = Math.cos(Cam3.yaw), rz = -Math.sin(Cam3.yaw);
+        dx = vx * rx + vz * rz;
+        dy = -(vx * fx + vz * fz);
+        if (Math.abs(dx) < 1e-4 && dy < 0) dx = 0.001;
+        dy = Math.abs(dy) < 1e-4 ? 1 : dy;
+      }
+      const mx = VW/2 - pad, my = VH/2 - pad;
+      const sc = Math.min(mx / Math.abs(dx || 1e-6), my / Math.abs(dy || 1e-6));
+      const px = VW/2 + dx * sc, py = VH/2 + dy * sc;
+      drawMarker(px, py, t, d, true, Math.atan2(dy, dx));
+    }
+  }
+}
+
+function drawMarker(x, y, t, d, edge, ang) {
+  const a = t.minor ? 0.55 : 0.9;
+  ctx.save();
+  if (edge) {
+    ctx.translate(x, y); ctx.rotate(ang);
+    ctx.fillStyle = hexA(t.c, a);
+    ctx.beginPath(); ctx.moveTo(11, 0); ctx.lineTo(-8, 7); ctx.lineTo(-8, -7);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    if (!t.minor) {
+      const lx = x - Math.cos(ang) * 26, ly = y - Math.sin(ang) * 26;
+      label2(lx, ly, Math.round(d) + 'm', hexA(t.c, 0.8), 10);
+    }
+    return;
+  }
+  /* on-screen: a small ring, the name, and the distance */
+  ctx.strokeStyle = hexA(t.c, a * 0.8);
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.arc(x, y, t.minor ? 5 : 8, 0, TAU); ctx.stroke();
+  if (t.prog > 0) {
+    ctx.strokeStyle = hexA(t.c, 0.95); ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(x, y, t.minor ? 5 : 8, -Math.PI/2, -Math.PI/2 + t.prog * TAU);
+    ctx.stroke();
+  }
+  ctx.fillStyle = hexA(t.c, a);
+  ctx.beginPath(); ctx.arc(x, y, 2, 0, TAU); ctx.fill();
+  ctx.restore();
+  if (!t.minor || d < 14) {
+    label2(x, y - 18, t.label, hexA(t.c, a), 10);
+    label2(x, y + 20, Math.round(d) + 'm', hexA(PAL.bone, 0.45), 9);
+  }
+}
+
+function label2(x, y, text, color, size) {
+  ctx.font = '600 ' + size + 'px "Avenir Next", "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(8,6,14,0.85)';
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = color; ctx.fillText(text, x, y);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+}
+
+/* --- reticle (replaces the 2D build's cursor crosshair) ------------------------- */
+function drawCrosshair() {
+  /* Screen centre is the aim point only while the cursor is locked there. In
+     the GDD's high-angle mode the cursor is free, so the reticle follows it. */
+  let x = VW / 2, y = VH / 2;
+  if (isHighAngle()) {
+    const s = projectToScreen(Cam3.aimX, 0.02, Cam3.aimZ);
+    if (s) { x = s[0]; y = s[1]; }
+  }
+  const firing = Player.firing;
+  const inner = firing ? 4 : 6, outer = firing ? 10 : 13;
+  ctx.strokeStyle = hexA(PAL.bloom, firing ? 0.95 : 0.55);
+  ctx.lineWidth = firing ? 2 : 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * TAU + Math.PI / 4;
+    ctx.moveTo(x + Math.cos(a) * inner, y + Math.sin(a) * inner);
+    ctx.lineTo(x + Math.cos(a) * outer, y + Math.sin(a) * outer);
+  }
+  ctx.stroke();
+  ctx.fillStyle = hexA(PAL.bloom, firing ? 1 : 0.75);
+  ctx.beginPath(); ctx.arc(x, y, firing ? 2.4 : 1.8, 0, TAU); ctx.fill();
+}
+
+/* --- camera mode flash --------------------------------------------------------
+   Swapping framing mid-fight is disorienting without a word for what happened. */
+function drawCamModeFlash() {
+  if (camModeFade <= 0) return;
+  const a = clamp(camModeFade / 1.2, 0, 1);
+  const label = isHighAngle() ? 'HIGH-ANGLE  ·  MACRO-TACTICAL' : 'OVER THE SHOULDER';
+  txtL(label, VW / 2, VH - 72, 12, hexA(PAL.bloom, 0.8 * a), 'center', 4);
+  txtL('[C] CAMERA', VW / 2, VH - 54, 8, hexA(PAL.bone, 0.35 * a), 'center', 2.2);
+}
+
+/* --- pause ------------------------------------------------------------------------ */
+function drawPauseCard() {
+  const t = performance.now() / 1000;
+  ctx.fillStyle = 'rgba(13,11,22,0.80)';
+  ctx.fillRect(0, 0, VW, VH);
+  drawTitleFlower(VW / 2, VH * 0.36, Math.min(VW, VH) * 0.075, t);
+  txtL('THE PLATEAU HOLDS ITS BREATH', VW / 2, VH * 0.52, 22, PAL.bone, 'center', 7);
+  const blink = 0.55 + Math.sin(t * 3) * 0.4;
+  txtL('CLICK OR PRESS ESC TO GO ON', VW / 2, VH * 0.52 + 34, 13, hexA(PAL.bone, blink), 'center', 4);
+  txtL('[R] START A NEW RUN   ·   [M] MUTE', VW / 2, VH * 0.52 + 60, 9, hexA(PAL.bone, 0.32), 'center', 2);
+}
+
+/* --- the cache prompt ---------------------------------------------------------------
+   In the isometric build this was a world-space label over the chest. Third
+   person needs it on the HUD, or standing on a cache reads as nothing happening. */
+function drawInteractPrompt() {
+  if (Game.state !== STATE.PLAY || Game.paused) return;
+  let near = null;
+  for (const c of chests) {
+    if (c.opened || !c.near) continue;
+    near = c; break;
+  }
+  if (!near) return;
+  const afford = Player.silver >= near.cost;
+  const y = VH - 132;
+  ctx.fillStyle = 'rgba(13,11,22,0.72)';
+  ctx.fillRect(VW / 2 - 150, y - 17, 300, 34);
+  ctx.strokeStyle = hexA(afford ? PAL.bloom : PAL.bone, 0.3);
+  ctx.lineWidth = 1;
+  ctx.strokeRect(VW / 2 - 150, y - 17, 300, 34);
+  txtL(afford ? '[E]  OPEN SEED CACHE  —  ' + near.cost
+              : 'NEEDS ' + near.cost + ' SILVER  (YOU HAVE ' + Player.silver + ')',
+       VW / 2, y + 4, 12, afford ? PAL.bloom : hexA(PAL.bone, 0.55), 'center', 3);
+}
+
+/* --- world-space floating text -----------------------------------------------------
+   The isometric build draws these into the world. Third person has no world
+   canvas to draw on, so they are projected onto the overlay instead — without
+   this, damage numbers, "+35", and "BALMBLOOM OPENS" simply never appeared. */
+function drawFloaters3D() {
+  for (const f of floaters) {
+    const s = projectToScreen(f.wx, 1.6, f.wy);
+    if (!s || s[2] > 40) continue;
+    const t = clamp(f.life / f.maxLife, 0, 1);
+    const scale = clamp(20 / (1 + s[2] * 0.35), 0.45, 1.15);
+    ctx.globalAlpha = clamp(t * 1.6, 0, 1);
+    label2(s[0], s[1] - (1 - t) * 26, f.text, f.color, Math.max(9, f.size * scale));
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* --- standing in a beacon ring ------------------------------------------------------
+   Says the name, the promise, and the exact numbers while you hold it, so the
+   first time you ever stand in a ring you learn what it is for. */
+function drawBeaconPrompt() {
+  if (Game.state !== STATE.PLAY || Game.paused) return;
+  let f = null;
+  for (const x of flowers) { if (!x.bloomed && x.inRadius) { f = x; break; } }
+  if (!f) return;
+  const T = FLOWER_TYPES[f.type];
+  const lines = flowerLines(f.type);
+  const w = 340, h = 86, x = VW / 2 - w / 2, y = VH - 236;
+
+  vinePanel(x, y, w, h, 0.82, T.petal);
+  txtL('HOLD  ' + T.name, VW / 2, y + 24, 14, T.petal, 'center', 3);
+  txtL(T.effect, VW / 2, y + 40, 9, hexA(T.petal, 0.7), 'center', 2);
+  for (let i = 0; i < lines.length; i++) {
+    txt(lines[i], VW / 2 - w / 2 + 24, y + 60 + i * 14, 10, hexA(PAL.bone, 0.8), 'left', 500);
+  }
+  /* the hold bar */
+  const bw = w - 48, bx = x + 24, by = y + h - 9;
+  ctx.fillStyle = 'rgba(13,11,22,0.7)';
+  ctx.fillRect(bx, by, bw, 4);
+  ctx.fillStyle = hexA(T.petal, 0.95);
+  ctx.fillRect(bx, by, bw * clamp(f.progress, 0, 1), 4);
+}
+
+/* --- the controls legend, which fades on its own -------------------------------- */
+function drawLegend() {
+  if (legendTimer <= 0 || Game.state !== STATE.PLAY) return;
+  const a = clamp(legendTimer / 2.5, 0, 1);
+  const lines = [
+    ['WASD', 'move'],
+    ['MOUSE', isHighAngle() ? 'aim' : 'look'],
+    ['HOLD CLICK', 'fire'],
+    ['E', 'open a cache'],
+    ['C', 'camera'],
+    ['ESC', 'pause'],
+  ];
+  const x = VW - 26, y0 = VH - 229;
+  for (let i = 0; i < lines.length; i++) {
+    const y = y0 + i * 19;
+    txtL(lines[i][0], x - 92, y, 10, hexA(PAL.bloom, 0.75 * a), 'right', 2);
+    txt(lines[i][1], x - 84, y, 11, hexA(PAL.bone, 0.5 * a), 'left', 400);
+  }
+  /* high-angle deliberately runs with a free cursor — don't tell them to lock it */
+  if (!Look.locked && !Look.lockDenied && !isHighAngle()) {
+    txtL('CLICK TO LOCK THE CURSOR', x, y0 + lines.length * 19 + 10, 9,
+         hexA(PAL.bone, 0.34 * a), 'right', 2);
+  }
+}
+
+/* --- title card ------------------------------------------------------------------
+   A live 3D plateau is already turning behind this, so the card stays sparse:
+   no painted skyline, just the mark and what the four inputs do. */
+function drawTitle3D() {
+  const t = performance.now() / 1000;
+  const g = ctx.createLinearGradient(0, 0, 0, VH);
+  g.addColorStop(0, 'rgba(13,11,22,0.88)');
+  g.addColorStop(0.5, 'rgba(13,11,22,0.62)');
+  g.addColorStop(1, 'rgba(13,11,22,0.92)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VW, VH);
+
+  drawTitleFlower(VW / 2, VH * 0.29, Math.min(VW, VH) * 0.095, t);
+  txtL('DUSKPETAL', VW / 2, VH * 0.29 + Math.min(VW, VH) * 0.175,
+       Math.min(52, VW * 0.072), PAL.bone, 'center', 12);
+  txtL('SIXTY SECONDS BEFORE THE LIGHT FADES', VW / 2,
+       VH * 0.29 + Math.min(VW, VH) * 0.175 + 26, 11, hexA(PAL.bloom, 0.55), 'center', 4);
+
+  const lines = [
+    ['WASD', 'move, relative to where you are looking'],
+    ['MOUSE', 'look'],
+    ['HOLD LEFT CLICK', 'fire — the gun does nothing on its own'],
+    ['E', 'open a seed cache you can afford'],
+    ['STAND IN A RING', 'hold a beacon until it opens'],
+    ['THE BOSS BLOOM', 'awake from the first second. it does not wait.'],
+  ];
+  const ly = VH * 0.60;
+  for (let i = 0; i < lines.length; i++) {
+    const y = ly + i * 23;
+    txtL(lines[i][0], VW / 2 - 18, y, 11, hexA(PAL.bloom, 0.8), 'right', 2);
+    txt(lines[i][1], VW / 2 + 18, y, 13, hexA(PAL.bone, 0.6), 'left', 400);
+  }
+}
+
+/* --- the boss wilt bar -----------------------------------------------------------
+   Third person has no room for a bar floating over the flower itself, so it goes
+   where a boss bar belongs: across the top, under the clock. */
+function drawBossBar() {
+  const Bs = Boss;
+  if (Bs.dead || (!Bs.active && Bs.charge <= 0.01)) return;
+
+  const w = Math.min(520, VW * 0.42), x = VW / 2 - w / 2, y = 104;
+
+  if (!Bs.active) {
+    /* the charge-up: a petal-unfurl fill, and a warning that says what it means */
+    ctx.fillStyle = 'rgba(13,11,22,0.55)';
+    ctx.fillRect(x, y, w, 6);
+    ctx.fillStyle = hexA(PAL.accent, 0.85);
+    ctx.fillRect(x, y, w * Bs.charge, 6);
+    txtL('FORCING IT OPEN', VW / 2, y - 8, 11, hexA(PAL.accent, 0.95), 'center', 3);
+    txtL('BACK OUT OF THE RING TO STOP', VW / 2, y + 20, 9, hexA(PAL.bone, 0.4), 'center', 2);
+    return;
+  }
+
+  const frac = clamp(Bs.hp / Bs.maxHp, 0, 1);
+  ctx.fillStyle = 'rgba(13,11,22,0.72)';
+  ctx.fillRect(x - 3, y - 3, w + 6, 16);
+  ctx.fillStyle = 'rgba(10,40,48,0.85)';
+  ctx.fillRect(x, y, w, 10);
+  const g = ctx.createLinearGradient(x, 0, x + w, 0);
+  g.addColorStop(0, '#0FA8BE'); g.addColorStop(1, PAL.accent);
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w * frac, 10);
+  ctx.strokeStyle = hexA(PAL.accent, 0.45); ctx.lineWidth = 1;
+  ctx.strokeRect(x - 3, y - 3, w + 6, 16);
+
+  /* the wilt notches — this is a flower being forced shut, not an HP bar */
+  ctx.strokeStyle = hexA(PAL.ink, 0.55); ctx.lineWidth = 1.5;
+  for (let i = 1; i < 6; i++) {
+    const nx = x + (w * i) / 6;
+    ctx.beginPath(); ctx.moveTo(nx, y); ctx.lineTo(nx, y + 10); ctx.stroke();
+  }
+  txtL(Bs.enraged ? 'BOSS BLOOM — IT REFUSES TO WILT' : 'BOSS BLOOM',
+       VW / 2, y - 8, 11, hexA(PAL.accent, 0.95), 'center', 3);
+}
+/* ============================================================================
+   BOOT AND LOOP — 3D build
+   ========================================================================== */
+
+let glCv = null;
+let last3 = 0, fpsAccum3 = 0, fpsCount3 = 0;
+const Proj = m4(), View = m4();
+
+let renderScale = CONFIG3D.RENDER_SCALE;
+function resize3D() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = glCv.clientWidth || window.innerWidth;
+  const h = glCv.clientHeight || window.innerHeight;
+  /* the scene buffer may be smaller than the window; CSS stretches it back up.
+     The HUD canvas always stays at full resolution so text remains crisp. */
+  glCv.width = Math.max(320, Math.round(w * dpr * renderScale));
+  glCv.height = Math.max(180, Math.round(h * dpr * renderScale));
+  gl.viewport(0, 0, glCv.width, glCv.height);
+  resizeHud();
+}
+
+/* step the scene resolution to hold a playable frame rate */
+let adaptAccum = 0, adaptFrames = 0, adaptWorst = 0;
+function adaptResolution(dt) {
+  if (!CONFIG3D.ADAPTIVE) return;
+  adaptAccum += dt; adaptFrames++;
+  adaptWorst = Math.max(adaptWorst, dt * 1000);
+  if (adaptAccum < 1.0) return;
+  const avgMs = (adaptAccum / adaptFrames) * 1000;
+  adaptAccum = 0; adaptFrames = 0; adaptWorst = 0;
+  let next = renderScale;
+  if (avgMs > CONFIG3D.ADAPTIVE_TARGET_MS) next = Math.max(CONFIG3D.ADAPTIVE_MIN, renderScale - 0.12);
+  else if (avgMs < CONFIG3D.ADAPTIVE_GOOD_MS) next = Math.min(1.0, renderScale + 0.06);
+  if (Math.abs(next - renderScale) > 0.005) { renderScale = next; resize3D(); }
+}
+
+function pickSeed3D() {
+  try {
+    const m = /[?&]seed=(\d+)/.exec(window.location.search);
+    if (m) return parseInt(m[1], 10) >>> 0;
+  } catch (e) { /* file:// with no query string — fine */ }
+  return (Math.random() * 0xFFFFFFFF) >>> 0;
+}
+
+let forcedSeed3 = null;
+function startRun3D() {
+  generateRun(forcedSeed3 !== null ? forcedSeed3 : pickSeed3D());
+  chestsOpened = 0;
+  econAccum = 0;
+  Game.state = STATE.PLAY;
+  Game.paused = false;
+  legendTimer = CONFIG3D.LEGEND_SECONDS;
+  buildGround();
+  /* face the boss at the start: the threat should be the first thing you see */
+  Cam3.yaw = Math.atan2(Boss.wx - Player.wx, Boss.wy - Player.wy);
+  Cam3.pitch = -0.20;
+  Cam3.x = Player.wx - Math.sin(Cam3.yaw) * CONFIG3D.CAM_DIST;
+  Cam3.z = Player.wy - Math.cos(Cam3.yaw) * CONFIG3D.CAM_DIST;
+  Cam3.y = CONFIG3D.PLAYER_EYE + CONFIG3D.CAM_HEIGHT;
+  Audio_.init();
+}
+
+function frame3D(now) {
+  requestAnimationFrame(frame3D);
+  if (!last3) last3 = now;
+  let dt = (now - last3) / 1000;
+  last3 = now;
+  if (dt > 0.1) dt = 0.1;
+
+  fpsAccum3 += dt; fpsCount3++;
+  if (fpsAccum3 >= 0.5) { fpsDisplay = fpsCount3 / fpsAccum3; fpsAccum3 = 0; fpsCount3 = 0; }
+
+  if (legendTimer > 0 && !Game.paused) legendTimer -= dt;
+  adaptResolution(dt);
+  if (hitstop > 0) { hitstop -= dt; dt *= 0.12; }
+  updateShake(dt);
+
+  if (Game.state === STATE.PLAY && !Game.paused) {
+    updateCamera3D(dt);
+    buildIntent3D();
+    updateGame(dt);
+  } else if (Game.state === STATE.PLAY && Game.paused) {
+    Game.intent = null;          // the world holds still while paused
+  } else {
+    Game.intent = null;
+    updateParticles(dt);
+    updateFloaters(dt);
+    if (Portal.exists) Portal.anim = Math.min(1, Portal.anim + dt);
+    updateCamera3D(dt);
+  }
+
+  draw3D();
+  renderHud();
+  Look.clearFrame();
+}
+
+function draw3D() {
+  const aspect = glCv.width / Math.max(1, glCv.height);
+  m4perspective(Proj, camFov(), aspect, 0.1, CONFIG3D.FAR);
+
+  /* Look along the camera's own forward axis. Screen centre is therefore the
+     aim point, and shake is a small nudge of that axis rather than of a target
+     pinned to the player. */
+  const sx = shakeX * CONFIG3D.SHAKE_SCALE, sy = shakeY * CONFIG3D.SHAKE_SCALE;
+  const F = Cam3.fwd, R = Cam3.right, U = Cam3.up, L = 12;
+  m4lookAt(View,
+    Cam3.x, Cam3.y, Cam3.z,
+    Cam3.x + F[0]*L + R[0]*sx + U[0]*sy,
+    Cam3.y + F[1]*L + R[1]*sx + U[1]*sy,
+    Cam3.z + F[2]*L + R[2]*sx + U[2]*sy,
+    0, 1, 0);
+  m4mul(ViewProj, Proj, View);
+
+  buildFrame();
+
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  drawSky();
+
+  /* --- pass 1: opaque, lit ------------------------------------------------ */
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  gl.enable(gl.DEPTH_TEST);
+
+  setSceneUniforms(P_GROUND, ViewProj, Cam3.x, Cam3.y, Cam3.z);
+  updateGroundColors();
+  gl.bindVertexArray(Ground.vao);
+  gl.drawArrays(gl.TRIANGLES, 0, Ground.count);
+  gl.bindVertexArray(null);
+
+  setSceneUniforms(P_LIT, ViewProj, Cam3.x, Cam3.y, Cam3.z);
+  for (const k in B) batchDraw(B[k]);
+
+  /* --- pass 2: ground decals ---------------------------------------------- */
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.useProgram(P_DECAL.prog);
+  gl.uniformMatrix4fv(P_DECAL.u.uViewProj, false, ViewProj);
+  batchDraw(D.quad);
+
+  /* --- pass 3: additive light ---------------------------------------------- */
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+  gl.useProgram(P_ADD.prog);
+  gl.uniformMatrix4fv(P_ADD.u.uViewProj, false, ViewProj);
+  batchDraw(A.beam);
+  batchDraw(A.glow);
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+function boot3D() {
+  glCv = document.getElementById('scene');
+  gl = glCv.getContext('webgl2', { antialias: true, alpha: false });
+  if (!gl) {
+    document.getElementById('nogl').style.display = 'flex';
+    return;
+  }
+  initHud(document.getElementById('hud'));
+  initScene();
+  bindInput3D(glCv);
+  window.addEventListener('resize', resize3D);
+  resize3D();
+
+  /* Straight into the run — no title gate, no click-to-dismiss. The controls
+     appear as a corner legend that fades on its own while you are already
+     playing, and the first click quietly upgrades to pointer lock. */
+  RNG = makeRng(pickSeed3D());
+  startRun3D();
+
+  requestAnimationFrame(frame3D);
+}
+
+/* headless harness hooks — identical surface to the 2D build */
+window.DUSKPETAL = {
+  CONFIG, CONFIG3D, Game, Player, Boss, Portal, World, STATE, Cam3, Look,
+  get flowers() { return flowers; },
+  get chests() { return chests; },
+  get enemies() { return enemies; },
+  get bolts() { return bolts; },
+  get enemyBolts() { return enemyBolts; },
+  generateRun, updateGame, bloomPercent, makeEnemy,
+  startRun: startRun3D,
+  setSeed(s) { forcedSeed3 = s; },
+  dist, flowerLit, recomputeStats,
+  moveWithCollision, isSolid, circleHitsSolid,
+  projectToScreen,
+  setCameraMode, isHighAngle, screenRayToGround, camFov,
+};
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot3D);
+else boot3D();
+</script>
+</body>
+</html>
