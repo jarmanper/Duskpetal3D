@@ -155,6 +155,79 @@ const CONFIG = {
   SPAWN_MAX_DIST_PLAYER:    24.0,
   ENEMY_AGGRO_RANGE:        12.0, // tiles
 
+  /* --- THE SIEGE -------------------------------------------------------------
+     Light is what the plateau is fighting over, so light ATTRACTS. Starting a
+     hold calls a wave to that beacon: the capture becomes the fight instead of
+     a pause before one. Spawn distance is measured from the BEACON and sits
+     just inside ENEMY_AGGRO_RANGE, so they arrive already awake on a player
+     standing in the ring and the existing AI takes over with no new behaviour.
+     A rusher covers 12 tiles in ~2.4s against a 3.2s hold, so the wave lands as
+     the beacon opens: most of the capture stays calm and the spike is short.
+     This is also what finally makes FLOWER_DECAY_PER_SEC bite — you cannot kite
+     the wave away without paying a third of the hold per second. */
+  SIEGE_ON_HOLD:            true, // false falls back to the pre-siege game
+  /* How far into a hold the dark notices, and from how far out.
+
+     These two numbers are the whole mechanic and they were wrong on the first
+     pass. At 0.25 progress and 11-13 tiles, a rusher needed ~2.4s to cross the
+     gap and arrived exactly as the beacon opened — which is to say, as the
+     player LEFT. The siege chased someone faster than it and cost nothing.
+     Firing at 0.15 (~0.5s in) from 8-10 tiles lands the wave around 1.7s into
+     a 3.2s hold, so the back half of every capture is genuinely contested.
+     Raise SIEGE_AT_PROGRESS if players report being mugged for cutting through
+     a ring; lower SIEGE_MIN/MAX_DIST if the wave still arrives too late. */
+  SIEGE_AT_PROGRESS:        0.15,
+  SIEGE_SIZE_BASE:          3,    // enemies called by the first hold
+  SIEGE_SIZE_PER_LIT:       2,    // +1 for each beacon already open
+  /* WHAT the dark sends, which matters more than how many. A siege of rushers
+     was free: standing in a ring is the best firing position in the game, and
+     they walked into the gun one at a time and died. Spitters are the counter
+     to standing still — you cannot dodge a projectile while holding a ring, and
+     stepping out to dodge costs FLOWER_DECAY_PER_SEC of the hold. That tension
+     IS the mechanic; the rushers are there to stop it being a pure shootout. */
+  SIEGE_SPITTER_SHARE:      0.55, // fraction of a siege that is ranged
+  SIEGE_MIN_DIST:           8.0,  // from the BEACON, not the player
+  SIEGE_MAX_DIST:           10.0,
+
+  /* --- ESCALATION ------------------------------------------------------------
+     Every beacon you open makes the rest of the run worse, which is what turns
+     "take all three" from free value into a gamble. ALL THREE MULTIPLIERS ARE
+     IDENTITY AT ZERO BEACONS LIT — a first-timer who lights nothing plays
+     exactly the game that existed before this block, so the difficulty lands
+     only on the route that was already winning 100% of the time. That property
+     is structural, not tuned; playtest.js asserts it. */
+  ESCALATE_INTERVAL:        0.26, // -14% wave interval per beacon lit
+  ESCALATE_SIZE:            1,    // +1 enemy per wave per beacon lit
+  ESCALATE_CAP:             4,    // +3 live enemies per beacon lit
+
+  /* --- BLOOM AS THE CENTREPIECE ----------------------------------------------
+     The ground light was a readout: every full run ended on exactly the map's
+     42% ceiling, and its only real effect (safe footing) landed in the last 8
+     seconds, which winning players never reach. So the most distinctive system
+     in the game was invisible to anyone good at it.
+
+     These three numbers make it the centre instead. Kills bloom the ground
+     under them, so WHERE you fight is a decision even though enemies die in a
+     third of a second. Dashing paints a line, which is the tool for joining
+     patches deliberately. And bloomed ground recharges the dash, so the payoff
+     arrives at second ten rather than second fifty-two. */
+  KILL_BLOOM_RADIUS:        2.2,  // tiles lit where an enemy dies
+  KILL_BLOOM_STRENGTH:      0.85, // must clear BLOOM_READ_THRESHOLD (0.42) to count
+  DASH_BLOOM_RADIUS:        0.9,  // the streak a dash leaves — thin, but a LINE,
+  DASH_BLOOM_STRENGTH:      0.80, // which is what connects two patches
+  BLOOM_DASH_RECHARGE:      1.35, // dash cools 35% faster while standing on bloom
+
+  /* --- DASH ------------------------------------------------------------------
+     The answer to being pinned in a ring. It needs no resource cost: dashing
+     out of a hold already costs you progress at FLOWER_DECAY_PER_SEC, and that
+     is the price. Shift, because Space is pause in the 3D build and start on
+     the title screen, and right-click is already eaten by contextmenu. */
+  DASH_DISTANCE:            4.5,  // tiles
+  DASH_TIME:                0.15, // sec of travel
+  DASH_COOLDOWN:            3.2,  // sec before the next one
+  DASH_IFRAMES:             0.17, // the dash plus a short tail
+  DASH_STEP_MAX:            0.30, // tiles per collision sub-step — same reason as bolts
+
   /* --- ENEMIES ------------------------------------------------------------ */
   /* Every speed here is below PLAYER_SPEED: you can always disengage on foot. */
   RUSHER_HP:                30,  RUSHER_SPEED: 4.9, RUSHER_DAMAGE: 11, RUSHER_RADIUS: 0.52,
@@ -216,6 +289,97 @@ const CONFIG = {
   BOSS_ENRAGE_MULT:         0.66,
 
   BOSS_BLOOM_RADIUS:        16.0, // ground its death floods with light
+
+  /* --- THE BOSS INHERITS YOUR RUN --------------------------------------------
+     Every beacon you open grows a petal on the Boss Bloom, in that beacon's
+     colour, visible from across the plateau the moment you light it. When you
+     commit to the fight, the petals you grew are the attacks you face.
+
+     This is the cost of a beacon, and it is deliberately NOT "+400 HP": invisible
+     arithmetic teaches nobody anything. A player should lose to the thorn lash
+     on run two and realise on run four that THEY grew it. The HP bonus below is
+     a small top-up, not the mechanism. */
+  BOSS_PETAL_HP:            0.04, // +10% boss health per petal you grew
+  /* THORNCROWN — a second lash, opposite the first. Reuses the sweep entirely. */
+  /* BALMBLOOM — a bud that heals the boss unless you shoot it. One hit kills it,
+     so the threat is your ATTENTION, which is the only thing this game can
+     actually threaten: you delete anything you choose to look at. */
+  BUD_INTERVAL:             6.5,  // sec between buds
+  BUD_LIFETIME:             1.9,  // sec you have to notice and shoot it
+  BUD_HEAL:                 38,   // boss health returned if you ignore one
+  BUD_DIST:                 4.2,  // how far from the boss it grows
+  /* LUNARIA — marks on the ground that erupt. Punishes standing still, which is
+     what an orbiting player does. */
+  ERUPT_INTERVAL:           4.4,
+  ERUPT_COUNT:              2,
+  ERUPT_DELAY:              1.15, // warning time before it goes off
+  ERUPT_RADIUS:             2.6,
+  ERUPT_DAMAGE:             10,
+
+  /* --- ROOT REVERSAL ---------------------------------------------------------
+     Dash THROUGH an enemy projectile and you do not destroy it — you plant it.
+     It slams into the ground behind you and sprouts, and what it sprouts into is
+     whatever you have already lit. The dash already had i-frames, so this adds
+     no button and no new resource: it converts the one defensive move you own
+     into an offensive one, and it turns the enemy population into a crop.
+
+     This is also why the siege being 55% ranged matters. Every spitter volley is
+     now seed stock, so the fight you called down on yourself at a beacon is the
+     fight that hands you the most to plant. */
+  PLANT_ON_DASH:            true, // false restores plain dodge-through
+  PLANT_CATCH_RADIUS:       1.05, // tiles around the dash line that count as "through"
+  PLANT_BEHIND:             1.5,  // tiles behind you the seed lands
+  PLANT_LIFETIME:           6.0,  // sec a planted flower stands
+  PLANT_GROW_TIME:          0.45, // sec of roots-and-eruption before it acts
+  PLANT_MAX:                6,    // live planted flowers; the oldest wilts first
+  PLANT_COOLDOWN:           0.18, // sec between plants, so one volley isn't a forest
+
+  /* SPROUT — nothing lit. It cannot fight, so it does the one thing the game
+     always wants more of: ground. */
+  PLANT_SPROUT_RADIUS:      3.0,  // tiles it blooms around itself
+  PLANT_SPROUT_STRENGTH:    0.85,
+
+  /* MOONFLOWER — Lunaria lit. Fires silver shots at whatever is nearest. */
+  PLANT_MOON_SHOTS:         3,    // shots per volley
+  PLANT_MOON_INTERVAL:      1.3,  // sec between volleys
+  PLANT_MOON_DAMAGE:        11,
+  PLANT_MOON_SPEED:         17,
+  PLANT_MOON_RANGE:         11.0,
+
+  /* BALM BLOSSOM — Balmbloom lit. One pulse, then it is spent. */
+  PLANT_BALM_HEAL:          18,
+  PLANT_BALM_DELAY:         1.1,  // sec before the pulse, so it is not instant value
+  PLANT_BALM_RADIUS:        4.5,
+
+  /* THORN PLANT — Thorncrown lit. Lashes anything that comes close. */
+  PLANT_THORN_DAMAGE:       16,
+  PLANT_THORN_INTERVAL:     0.85,
+  PLANT_THORN_RADIUS:       3.4,
+
+  /* --- THE LAST BLOOM --------------------------------------------------------
+     The final DUSK_WINDOW_SECONDS were "the floor hurts now". They are the
+     signature event instead: the wither eats the dark ground from the map edges
+     inward while everything you bloomed wakes up, and dashing bloom-to-bloom
+     builds a chain that pays escalating dividends. A player who bloomed nothing
+     hops between islands; a player who bloomed well has built a highway.
+
+     The chain only counts a dash that STARTS and ENDS on bloomed ground, which
+     is what makes the last eight seconds a readout of the previous fifty-two. */
+  WITHER_BANNER_SECONDS:    2.2,  // how long the title card holds
+  WITHER_HEARTBEAT:         0.55, // sec of near-silence before it lands
+  CHAIN_MAX:                5,    // 5 is FULL BLOOM
+  CHAIN_WINDOW:             2.6,  // sec to land the next bloom-dash before it lapses
+  CHAIN_RECHARGE_AT:        2,    // tier that starts cutting the dash cooldown
+  CHAIN_RECHARGE_MULT:      2.2,  // dash cooldown rate at that tier and above
+  CHAIN_SPEED_AT:           3,    // tier that grants the movement boost
+  CHAIN_SPEED_MULT:         1.28,
+  CHAIN_MARK_AT:            4,    // tier at which dashing THROUGH an enemy marks it
+  CHAIN_MARK_DAMAGE:        26,   // what a mark detonates for when it expires
+  CHAIN_MARK_TIME:          1.4,
+  FULLBLOOM_SECONDS:        2.0,  // tier 5: the payoff window
+  FULLBLOOM_RECHARGE:       14.0, // dash cooldown rate during it — effectively free
+  FULLBLOOM_TRAIL_RADIUS:   2.6,  // the huge trail it paints
+  FULLBLOOM_TRAIL_STRENGTH: 0.95,
 
   /* --- PORTAL --------------------------------------------------------------- */
   PORTAL_BLOOM_SECONDS:     1.5,  // petals unfurling into existence
@@ -476,12 +640,16 @@ function updateFloaters(dt) {
    and says in plain words what it does. Shared by both builds.
    -------------------------------------------------------------------------------- */
 const cards = [];
-function showCard(title, sub, lines, color, iconId, glyph) {
+function showCard(title, sub, lines, color, iconId, glyph, warn) {
   /* one card at a time reads better than a stack; a new one replaces the old */
   cards.length = 0;
   cards.push({
     title, sub, lines: lines || [], color: color || PAL.bloom,
     iconId: iconId || null, glyph: glyph || null,
+    /* `warn` is what this gift COST you. It is drawn apart from the benefits and
+       in the boss's own cyan, because a player who only reads the good lines
+       will never work out that they are building the thing that kills them. */
+    warn: warn || null,
     life: CONFIG.CARD_SECONDS, maxLife: CONFIG.CARD_SECONDS,
   });
 }
@@ -555,6 +723,14 @@ const Audio_ = {
   portal()  { this.blip(660, 0.9, 'sine', 0.16, 2.2); this.blip(990, 1.1, 'sine', 0.10, 1.8); },
   win()     { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.blip(f, 0.5, 'sine', 0.16, 1.0), i * 130)); },
   lose()    { [330, 262, 196, 147].forEach((f, i) => setTimeout(() => this.blip(f, 0.6, 'triangle', 0.15, 0.8), i * 190)); },
+  /* THE LAST BLOOM. The spec asked for the music to cut — there is no music to
+     cut, so the equivalent is built the other way round: a single low heartbeat
+     with nothing under it, then the wither swell. The silence is the gap. */
+  heartbeat() { this.blip(58, 0.16, 'sine', 0.26, 0.7);
+                setTimeout(() => this.blip(46, 0.22, 'sine', 0.20, 0.6), 190); },
+  wither()  { this.noise(1.5, 0.16, 300);
+              this.blip(88, 1.5, 'sawtooth', 0.14, 0.45);
+              this.blip(132, 1.2, 'triangle', 0.08, 0.5); },
 };
 /* ============================================================================
    WORLD — terrain, bloom state, structures, procedural placement
@@ -820,6 +996,8 @@ const Game = {
   best: null,         // best clear time this session
   intent: null,       // headless playtest override; null during real play
   deathContext: '',   // why the run ended, so the end card can say something useful
+  witherBanner: 0,    // THE LAST BLOOM's title card, counted down in updateGame
+  headless: false,    // a harness is stepping the sim; the render loop stands down
 };
 
 const Player = {
@@ -831,6 +1009,12 @@ const Player = {
   fireTimer: 0,
   firing: false,
   iframes: 0,
+  dashTimer: 0, dashCd: 0, dashX: 1, dashY: 0,   // the dash, see updatePlayer
+  /* THE LAST BLOOM's chain: consecutive dashes that both start and end on
+     bloomed ground. `tier` is 0..CHAIN_MAX, `chainT` is the window left to
+     land the next one, `fullBloom` is the tier-5 payoff timer. */
+  tier: 0, chainT: 0, fullBloom: 0,
+  plantCd: 0,                                    // ROOT REVERSAL rate limit
   silver: 0,
   totalSilver: 0,
   // multipliers, rebuilt from flowers + items each frame
@@ -873,6 +1057,22 @@ const FLOWER_TYPES = {
   },
 };
 
+/* What each beacon grows on the Boss Bloom. Named and described in one place so
+   the card, the tracker, the commit screen and the title screen all say the same
+   thing — a player has to be able to connect "I lit Thorncrown" to "it has two
+   lashes now", and that only happens if the words match everywhere. */
+/* `does` is the full sentence the bloom card says once, at the moment you pay
+   for it. `short` is the reminder the commit card lists back to you with two
+   others beside it, so it has to survive being prefixed by a name. */
+const PETALS = {
+  econ: { name: 'MOON PETAL',  does: 'it marks the ground under you to erupt',
+          short: 'erupts the ground under you' },
+  heal: { name: 'BALM PETAL',  does: 'it grows buds that heal it — shoot them',
+          short: 'grows buds that heal it' },
+  buff: { name: 'THORN PETAL', does: 'it swings a second lash, opposite the first',
+          short: 'a second lash, opposite the first' },
+};
+
 /* the exact numbers, derived from CONFIG so the UI cannot lie about the game */
 function flowerLines(id) {
   if (id === 'econ') return [
@@ -895,6 +1095,7 @@ function makeFlower(type, wx, wy) {
     type, wx, wy, r: 0.6,
     progress: 0, bloomed: false, bloomAnim: 0,
     inRadius: false, sway: rndR(0, TAU),
+    sieged: false,          // the hold calls its wave once, not once per frame
   };
 }
 
@@ -966,7 +1167,60 @@ const Boss = {
   sweepT: 0, sweepAngle: 0, sweepDir: 1,
   sway: 0,
   enraged: false,
+  /* which beacons you grew into it. `crown` is live, so the flower on the
+     horizon changes the moment you light one; `petals` is snapshotted when you
+     commit, so the fight you get is the one you walked in with. */
+  crown: { econ: false, heal: false, buff: false },
+  petals: { econ: false, heal: false, buff: false },
+  budCd: 0, eruptCd: 0,
 };
+
+/* buds the Boss Bloom grows to heal itself, and the marks it leaves to erupt */
+let buds = [];
+let erupts = [];
+
+/* --- ROOT REVERSAL ------------------------------------------------------------
+   Flowers grown out of enemy fire. `kind` is decided at the moment of planting
+   from which beacons are lit, and a plant can carry MORE THAN ONE — light two
+   beacons and the thing you plant does both. That is the hybrid: it is not a
+   fourth type to balance, it is the union of what you already earned.
+   ---------------------------------------------------------------------------- */
+const PLANT_KINDS = {
+  sprout: { name: 'SPROUT',     tag: 'it makes ground, which is all it can do',
+            color: '#DFF3E4', core: '#FFFFFF' },
+  moon:   { name: 'MOONFLOWER', tag: 'it fires silver at what comes near',
+            color: FLOWER_TYPES.econ.petal, core: FLOWER_TYPES.econ.core },
+  balm:   { name: 'BALM BLOSSOM', tag: 'one healing pulse, then it is spent',
+            color: FLOWER_TYPES.heal.petal, core: FLOWER_TYPES.heal.core },
+  thorn:  { name: 'THORN PLANT', tag: 'it lashes anything that comes close',
+            color: FLOWER_TYPES.buff.petal, core: FLOWER_TYPES.buff.core },
+};
+
+let planted = [];
+let marks = [];          // enemies branded during a tier-4 chain dash
+
+/* What a caught projectile becomes, read off the beacons you have open. */
+function plantKindsNow() {
+  const k = [];
+  if (flowerLit('econ')) k.push('moon');
+  if (flowerLit('heal')) k.push('balm');
+  if (flowerLit('buff')) k.push('thorn');
+  return k.length ? k : ['sprout'];
+}
+
+function makePlant(wx, wy, kinds) {
+  return {
+    wx, wy, r: 0.55, kinds,
+    life: CONFIG.PLANT_LIFETIME, max: CONFIG.PLANT_LIFETIME,
+    grow: CONFIG.PLANT_GROW_TIME,          // counts down; it cannot act until 0
+    moonCd: CONFIG.PLANT_MOON_INTERVAL * 0.45,
+    balmCd: CONFIG.PLANT_BALM_DELAY,
+    balmSpent: false,
+    thornCd: CONFIG.PLANT_THORN_INTERVAL * 0.5,
+    sway: rndR(0, TAU),
+    lash: 0,                               // >0 while the thorn arm is visible
+  };
+}
 
 const Portal = { wx: 0, wy: 0, r: CONFIG.PORTAL_RADIUS, exists: false, anim: 0 };
 
@@ -997,6 +1251,8 @@ function generateRun(seed) {
   Player.items = []; Player.pierce = 0;
   Player.dmgMult = 1; Player.rateMult = 1; Player.speedMult = 1;
   Player.fireTimer = 0; Player.iframes = 0; Player.hurtFlash = 0; Player.firing = false;
+  Player.dashTimer = 0; Player.dashCd = 0; Player.dashX = 1; Player.dashY = 0;
+  Player.tier = 0; Player.chainT = 0; Player.fullBloom = 0; Player.plantCd = 0;
   Player.vx = 0; Player.vy = 0; Player.aimX = 1; Player.aimY = 0;
 
   /* --- BOSS: far, reachable, no gate -------------------------------------- */
@@ -1010,6 +1266,10 @@ function generateRun(seed) {
   Boss.openness = 0; Boss.hitFlash = 0; Boss.enraged = false;
   Boss.barrageCd = 1.2; Boss.sweepCd = CONFIG.BOSS_SWEEP_COOLDOWN; Boss.seedCd = 4.0;
   Boss.sweepState = 0; Boss.sweepT = 0; Boss.sway = 0;
+  Boss.crown = { econ: false, heal: false, buff: false };
+  Boss.petals = { econ: false, heal: false, buff: false };
+  Boss.budCd = CONFIG.BUD_INTERVAL; Boss.eruptCd = CONFIG.ERUPT_INTERVAL;
+  buds = []; erupts = []; planted = []; marks = [];
   Portal.exists = false; Portal.anim = 0; Portal.wx = Boss.wx; Portal.wy = Boss.wy;
 
   /* --- FLOWERS: guaranteed spread, healing kept near the corridor ---------- */
@@ -1080,7 +1340,7 @@ function generateRun(seed) {
   /* --- CLOCK -------------------------------------------------------------- */
   Game.time = 0;
   Game.timeLeft = CONFIG.LIGHT_SECONDS;
-  Game.dusk = false; Game.duskTimer = 0; Game.clearTime = 0;
+  Game.dusk = false; Game.duskTimer = 0; Game.clearTime = 0; Game.witherBanner = 0;
   respawnTimer = CONFIG.WAVE_FIRST_AT;
 
   /* the wilted beacon you spawn at: the last ember of it, and a real foothold */
@@ -1126,12 +1386,25 @@ function updateGame(dt) {
   const win = CONFIG.DUSK_WINDOW_SECONDS;
   if (!Game.dusk && win > 0 && Game.timeLeft <= win) {
     Game.dusk = true;
-    addShake(12);
-    Audio_.lose();
-    floatText(Player.wx, Player.wy - 1.4, 'THE LIGHT IS GOING', PAL.blood, 20);
-    showCard('THE LIGHT IS GOING', 'The dark is taking back everything you did not bloom',
-             ['bloomed ground still holds', 'stand in it or burn'], PAL.blood, null, null);
+    /* THE LAST BLOOM opens here. One heartbeat of near-silence, then the
+       banner — the pause is what makes the line land rather than blur into the
+       fight noise, and it is the only moment in the run the game goes quiet. */
+    Game.witherBanner = CONFIG.WITHER_BANNER_SECONDS + CONFIG.WITHER_HEARTBEAT;
+    Player.tier = 0; Player.chainT = 0; Player.fullBloom = 0;
+    addShake(20);
+    addHitstop(0.12);
+    Audio_.heartbeat();
+    setTimeout(() => { if (Game.state === STATE.PLAY) Audio_.wither(); },
+               CONFIG.WITHER_HEARTBEAT * 1000);
+    /* the banner says the MOMENT; the card says what to DO about it — saying
+       the same headline twice just reads as a rendering bug */
+    showCard('THE ONLY ROAD OUT', 'the dark eats every tile you did not light',
+             ['bloomed ground still holds you',
+              'dash bloom-to-bloom to build the chain',
+              CONFIG.CHAIN_MAX + ' links is FULL BLOOM'],
+             PAL.blood, null, null, null);
   }
+  if (Game.witherBanner > 0) Game.witherBanner -= dt;
   if (Game.dusk) {
     duskReclaim = win > 0 ? clamp(1 - Game.timeLeft / win, 0, 1) : 1;
     Game.duskTimer = win - Math.max(0, Game.timeLeft);
@@ -1150,6 +1423,8 @@ function updateGame(dt) {
   updateEnemyBolts(dt);
   updatePickups(dt);
   updateBoss(dt);
+  updatePlanted(dt);
+  updateMarks(dt);
   updatePortal(dt);
   updateBloomField(dt);
   updateParticles(dt);
@@ -1181,10 +1456,87 @@ function updatePlayer(dt) {
     const n = screenDirToWorld(ix, iy);
     mx = n[0]; my = n[1];
   }
-  const speed = CONFIG.PLAYER_SPEED * p.speedMult;
-  p.vx = mx * speed; p.vy = my * speed;
-  if (mx || my) p.bob += dt * 11; else p.bob = approach(p.bob, 0, 6, dt);
-  moveWithCollision(p, p.vx * dt, p.vy * dt);
+  /* --- dash ------------------------------------------------------------------
+     The answer to being pinned in a beacon ring. No resource cost: dashing out
+     of a hold already bleeds FLOWER_DECAY_PER_SEC of your progress, and that is
+     the price. Sub-stepped through moveWithCollision at DASH_STEP_MAX for the
+     same reason the bolts are — moving 4.5 tiles in one frame would put you
+     through a wall. */
+  /* bloomed ground gives the dash back faster — the reason to care about your
+     own garden at second ten instead of second fifty-two */
+  const onBloom = bloomAt(p.wx, p.wy) >= BLOOM_READ_THRESHOLD;
+  /* The chain multiplies the recharge, and FULL BLOOM effectively removes it.
+     Both only exist during the wither, so nothing here changes the first 52s. */
+  let rechargeMult = onBloom ? CONFIG.BLOOM_DASH_RECHARGE : 1;
+  if (p.fullBloom > 0) rechargeMult = CONFIG.FULLBLOOM_RECHARGE;
+  else if (p.tier >= CONFIG.CHAIN_RECHARGE_AT) rechargeMult *= CONFIG.CHAIN_RECHARGE_MULT;
+  p.dashCd = Math.max(0, p.dashCd - dt * rechargeMult);
+  p.plantCd = Math.max(0, p.plantCd - dt);
+
+  /* the chain lapses if you do not land the next bloom-dash in time */
+  p.fullBloom = Math.max(0, p.fullBloom - dt);
+  if (p.tier > 0 && p.fullBloom <= 0) {
+    p.chainT -= dt;
+    if (p.chainT <= 0) breakChain('the chain lapsed');
+  }
+
+  /* SPACE is the dash. Shift still works as an alias for anyone who learned it
+     that way, but every label in the game says SPACE. */
+  const wantsDash = Game.intent ? !!Game.intent.dash
+                                : (Input.key(' ') || Input.key('shift'));
+  if (wantsDash && p.dashCd <= 0 && p.dashTimer <= 0) {
+    let dx = mx, dy = my;
+    if (!dx && !dy) { dx = p.aimX; dy = p.aimY; }   // standing still: dash where you look
+    const dl = Math.hypot(dx, dy);
+    if (dl > 1e-5) {
+      p.dashX = dx / dl; p.dashY = dy / dl;
+      p.dashTimer = CONFIG.DASH_TIME;
+      p.dashCd = CONFIG.DASH_COOLDOWN;
+      p.iframes = Math.max(p.iframes, CONFIG.DASH_IFRAMES);
+      /* remembered for the chain: a link only counts if BOTH ends are lit */
+      p.dashStartBloom = onBloom;
+      p.dashCaught = 0;
+      Audio_.blip(520, 0.10, 'sine', 0.06, 1.8);
+      for (let i = 0; i < 8; i++) {
+        spawnParticle(p.wx, p.wy, -p.dashX * rndR(2, 6), -p.dashY * rndR(2, 6),
+                      rndR(0.18, 0.34), rndR(1.6, 3.0), PAL.bloom);
+      }
+    }
+  }
+
+  /* tier 3 and up move faster; it is the reward that most changes how the last
+     seconds FEEL, because escaping is a movement problem */
+  const chainSpeed = (p.fullBloom > 0 || p.tier >= CONFIG.CHAIN_SPEED_AT)
+                   ? CONFIG.CHAIN_SPEED_MULT : 1;
+  const speed = CONFIG.PLAYER_SPEED * p.speedMult * chainSpeed;
+  if (p.dashTimer > 0) {
+    const wasDashing = true;
+    const step = Math.min(dt, p.dashTimer);
+    p.dashTimer -= dt;
+    const travel = (CONFIG.DASH_DISTANCE / CONFIG.DASH_TIME) * step;
+    const subs = Math.max(1, Math.ceil(travel / CONFIG.DASH_STEP_MAX));
+    const full = p.fullBloom > 0;
+    for (let i = 0; i < subs; i++) {
+      moveWithCollision(p, p.dashX * travel / subs, p.dashY * travel / subs);
+      /* the streak: a dash is a brush stroke, and a line is what joins two
+         patches that a scatter of kills never will */
+      paintBloom(p.wx, p.wy,
+                 full ? CONFIG.FULLBLOOM_TRAIL_RADIUS : CONFIG.DASH_BLOOM_RADIUS,
+                 full ? CONFIG.FULLBLOOM_TRAIL_STRENGTH : CONFIG.DASH_BLOOM_STRENGTH);
+      /* ROOT REVERSAL and the tier-4 mark are both "what the dash passed
+         through", so they are tested per sub-step at the same place */
+      if (CONFIG.PLANT_ON_DASH) catchProjectiles();
+      if (p.tier >= CONFIG.CHAIN_MARK_AT || full) markPassedEnemies();
+    }
+    p.vx = p.dashX * speed; p.vy = p.dashY * speed;
+    p.bob += dt * 11;
+    /* the dash just ended this frame — score the link */
+    if (wasDashing && p.dashTimer <= 0) endDashChain();
+  } else {
+    p.vx = mx * speed; p.vy = my * speed;
+    if (mx || my) p.bob += dt * 11; else p.bob = approach(p.bob, 0, 6, dt);
+    moveWithCollision(p, p.vx * dt, p.vy * dt);
+  }
 
   /* aim — mouse position projected back onto the ground plane */
   let ax, ay;
@@ -1225,6 +1577,241 @@ function updatePlayer(dt) {
 }
 let econAccum = 0;
 
+/* ============================================================================
+   ROOT REVERSAL — dash through a projectile and you plant it
+
+   The dash already granted i-frames, so a player who dashed through enemy fire
+   was previously rewarded with nothing except not being hit. Now the projectile
+   is not destroyed, it is CAUGHT: it slams into the ground behind you and grows
+   into whatever your lit beacons make of it. The same enemies that were pressure
+   become the crop, which is the bloom theme stated mechanically rather than
+   decoratively.
+
+   Tested against the dash's own sub-steps so a fast projectile cannot slip
+   between frames — the same reason bolts are sub-stepped.
+   ========================================================================== */
+function catchProjectiles() {
+  const p = Player;
+  if (p.plantCd > 0 || !enemyBolts.length) return;
+  const rr = CONFIG.PLANT_CATCH_RADIUS + p.r;
+  for (let i = enemyBolts.length - 1; i >= 0; i--) {
+    const b = enemyBolts[i];
+    if (dist2(b.wx, b.wy, p.wx, p.wy) > rr * rr) continue;
+
+    /* the seed lands BEHIND you, so planting is aimed: you choose where it
+       grows by choosing which way you dash through the shot */
+    const px = clamp(p.wx - p.dashX * CONFIG.PLANT_BEHIND, 1.2, World.w - 1.2);
+    const py = clamp(p.wy - p.dashY * CONFIG.PLANT_BEHIND, 1.2, World.h - 1.2);
+    plantSeed(px, py);
+    enemyBolts.splice(i, 1);
+    p.plantCd = CONFIG.PLANT_COOLDOWN;
+    p.dashCaught = (p.dashCaught || 0) + 1;
+    return;                       // one per sub-step; the cooldown paces the rest
+  }
+}
+
+function plantSeed(wx, wy) {
+  if (circleHitsSolid(wx, wy, 0.5)) {
+    /* a wall behind you: drop it at your feet rather than losing the catch */
+    wx = Player.wx; wy = Player.wy;
+  }
+  const kinds = plantKindsNow();
+  /* a cap, oldest-wilts-first, so a long spitter volley cannot carpet the map */
+  while (planted.length >= CONFIG.PLANT_MAX) planted.shift();
+  planted.push(makePlant(wx, wy, kinds));
+
+  const T = PLANT_KINDS[kinds[0]];
+  paintBloom(wx, wy, 1.4, 0.75);
+  addShake(7);
+  addHitstop(0.03);
+  Audio_.bloom();
+  Audio_.blip(180, 0.26, 'sawtooth', 0.08, 2.6);
+  /* roots exploding outward */
+  burst(wx, wy, 30, { color: T.color, smin: 3, smax: 12, lmin: 0.35, lmax: 0.9, zmax: 5 });
+  burst(wx, wy, 12, { color: PAL.bloom, smin: 1, smax: 5, lmin: 0.5, lmax: 1.1 });
+  floatText(wx, wy - 1.8, kinds.length > 1 ? 'HYBRID PLANTED' : T.name, T.color, 15);
+}
+
+/* ---------------------------------------------------------------------------
+   What a planted flower DOES. A plant can carry several kinds at once — that is
+   the hybrid — so each behaviour is its own independent block rather than a
+   switch, and a two-beacon plant simply runs two of them.
+   --------------------------------------------------------------------------- */
+function updatePlanted(dt) {
+  for (let i = planted.length - 1; i >= 0; i--) {
+    const pl = planted[i];
+    pl.sway += dt * 1.6;
+    pl.life -= dt;
+    pl.lash = Math.max(0, pl.lash - dt * 3);
+    if (pl.life <= 0) {
+      burst(pl.wx, pl.wy, 14, { color: PLANT_KINDS[pl.kinds[0]].color, smin: 2, smax: 7, lmin: 0.3, lmax: 0.7 });
+      planted.splice(i, 1);
+      continue;
+    }
+    /* the roots-and-eruption beat: it is visible before it is useful */
+    if (pl.grow > 0) { pl.grow -= dt; continue; }
+
+    const has = (k) => pl.kinds.indexOf(k) >= 0;
+
+    /* SPROUT — the fallback. It cannot fight, so it grows ground, steadily. */
+    if (has('sprout')) {
+      paintBloom(pl.wx, pl.wy, CONFIG.PLANT_SPROUT_RADIUS, CONFIG.PLANT_SPROUT_STRENGTH);
+      if (rnd() < dt * 9) {
+        const a = rndR(0, TAU), r = rndR(0.6, CONFIG.PLANT_SPROUT_RADIUS);
+        spawnParticle(pl.wx + Math.cos(a) * r, pl.wy + Math.sin(a) * r,
+                      -Math.cos(a) * 1.2, -Math.sin(a) * 1.2, 0.5, 2.0, PLANT_KINDS.sprout.color);
+      }
+    }
+
+    /* MOONFLOWER — silver shots at the nearest enemy in range */
+    if (has('moon')) {
+      pl.moonCd -= dt;
+      if (pl.moonCd <= 0) {
+        const tgt = nearestEnemyTo(pl.wx, pl.wy, CONFIG.PLANT_MOON_RANGE);
+        if (tgt) {
+          pl.moonCd = CONFIG.PLANT_MOON_INTERVAL;
+          for (let s = 0; s < CONFIG.PLANT_MOON_SHOTS; s++) {
+            /* a small spread, so a volley reads as a volley */
+            const base = Math.atan2(tgt.wy - pl.wy, tgt.wx - pl.wx);
+            const a = base + (s - (CONFIG.PLANT_MOON_SHOTS - 1) / 2) * 0.12;
+            bolts.push({
+              wx: pl.wx + Math.cos(a) * 0.5, wy: pl.wy + Math.sin(a) * 0.5,
+              vx: Math.cos(a) * CONFIG.PLANT_MOON_SPEED,
+              vy: Math.sin(a) * CONFIG.PLANT_MOON_SPEED,
+              life: CONFIG.BOLT_LIFE, dmg: CONFIG.PLANT_MOON_DAMAGE,
+              pierce: 0, hit: [], r: CONFIG.BOLT_RADIUS, spin: a, silver: true,
+            });
+          }
+          Audio_.blip(760, 0.07, 'sine', 0.045, 1.3);
+        } else { pl.moonCd = 0.25; }   // nothing to shoot: check again shortly
+      }
+    }
+
+    /* BALM BLOSSOM — one pulse, then that half of it is spent */
+    if (has('balm') && !pl.balmSpent) {
+      pl.balmCd -= dt;
+      if (pl.balmCd <= 0) {
+        pl.balmSpent = true;
+        if (dist(Player.wx, Player.wy, pl.wx, pl.wy) < CONFIG.PLANT_BALM_RADIUS) {
+          Player.hp = Math.min(Player.maxHp, Player.hp + CONFIG.PLANT_BALM_HEAL);
+          floatText(Player.wx, Player.wy - 1.2, '+' + CONFIG.PLANT_BALM_HEAL,
+                    FLOWER_TYPES.heal.core, 16);
+        }
+        burst(pl.wx, pl.wy, 26, { color: FLOWER_TYPES.heal.petal, smin: 3, smax: 11, lmin: 0.4, lmax: 0.9 });
+        Audio_.bloom();
+      }
+    }
+
+    /* THORN PLANT — lashes whatever comes close, including what shot at you */
+    if (has('thorn')) {
+      pl.thornCd -= dt;
+      if (pl.thornCd <= 0) {
+        let hit = 0;
+        for (let j = enemies.length - 1; j >= 0; j--) {
+          const e = enemies[j];
+          if (dist(e.wx, e.wy, pl.wx, pl.wy) > CONFIG.PLANT_THORN_RADIUS) continue;
+          e.hp -= CONFIG.PLANT_THORN_DAMAGE; e.hitFlash = 1; hit++;
+          burst(e.wx, e.wy, 5, { color: FLOWER_TYPES.buff.petal, smin: 2, smax: 6, lmin: 0.1, lmax: 0.3 });
+          if (e.hp <= 0) killEnemy(e, j);
+        }
+        if (hit) {
+          pl.thornCd = CONFIG.PLANT_THORN_INTERVAL;
+          pl.lash = 1;
+          Audio_.hit();
+        } else { pl.thornCd = 0.2; }
+      }
+    }
+  }
+}
+
+function nearestEnemyTo(wx, wy, range) {
+  let best = null, bd = range * range;
+  for (const e of enemies) {
+    const d = dist2(e.wx, e.wy, wx, wy);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+
+/* ============================================================================
+   THE LAST BLOOM — the chain, and the marks it brands
+
+   A link counts only when a dash both STARTS and ENDS on bloomed ground. That
+   single rule is what makes the final eight seconds read back the previous
+   fifty-two: the highway you built is the thing you are now driving on, and a
+   player who bloomed nothing simply cannot chain.
+   ========================================================================== */
+function endDashChain() {
+  const p = Player;
+  if (!Game.dusk) return;                       // the chain is a wither mechanic
+  const endBloom = bloomAt(p.wx, p.wy) >= BLOOM_READ_THRESHOLD;
+  if (!p.dashStartBloom || !endBloom) { breakChain('you left the bloom'); return; }
+
+  if (p.tier >= CONFIG.CHAIN_MAX) { p.chainT = CONFIG.CHAIN_WINDOW; return; }
+  p.tier++;
+  p.chainT = CONFIG.CHAIN_WINDOW;
+
+  const T = chainTierName(p.tier);
+  Audio_.blip(420 + p.tier * 110, 0.12, 'sine', 0.07, 1.6);
+  if (p.tier >= CONFIG.CHAIN_MAX) {
+    /* FULL BLOOM */
+    p.fullBloom = CONFIG.FULLBLOOM_SECONDS;
+    addShake(18);
+    addHitstop(0.07);
+    Audio_.win();
+    floatText(p.wx, p.wy - 2.8, 'FULL BLOOM', PAL.bloom, 26);
+    burst(p.wx, p.wy, 70, { color: PAL.bloom, smin: 4, smax: 16, lmin: 0.6, lmax: 1.6, zmax: 8 });
+    burst(p.wx, p.wy, 30, { color: PAL.accent, smin: 3, smax: 10, lmin: 0.5, lmax: 1.2 });
+  } else {
+    floatText(p.wx, p.wy - 2.2, T, PAL.bloom, 14);
+    burst(p.wx, p.wy, 10 + p.tier * 4, { color: PAL.bloom, smin: 2, smax: 7, lmin: 0.3, lmax: 0.7 });
+  }
+}
+
+function breakChain(why) {
+  const p = Player;
+  if (p.tier <= 0) { p.chainT = 0; return; }
+  /* only worth saying out loud if they had actually built something */
+  if (p.tier >= 2 && p.fullBloom <= 0) floatText(p.wx, p.wy - 1.8, why.toUpperCase(), PAL.blood, 12);
+  p.tier = 0; p.chainT = 0;
+}
+
+/* what each tier gives, in the words the HUD uses */
+const CHAIN_TIERS = [
+  '', 'CHAIN 1', 'FASTER RECHARGE', 'SWIFT', 'MARKING', 'FULL BLOOM',
+];
+function chainTierName(t) { return CHAIN_TIERS[clamp(t, 0, CHAIN_TIERS.length - 1)]; }
+
+/* tier 4: enemies the dash passes through are branded, and the brand detonates */
+function markPassedEnemies() {
+  const p = Player;
+  for (const e of enemies) {
+    if (e.marked) continue;
+    const rr = e.r + p.r + 0.35;
+    if (dist2(e.wx, e.wy, p.wx, p.wy) > rr * rr) continue;
+    e.marked = CONFIG.CHAIN_MARK_TIME;
+    burst(e.wx, e.wy, 8, { color: PAL.accent, smin: 2, smax: 6, lmin: 0.2, lmax: 0.4 });
+    Audio_.blip(880, 0.06, 'square', 0.04, 1.4);
+  }
+}
+
+function updateMarks(dt) {
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    if (!e.marked) continue;
+    e.marked -= dt;
+    if (rnd() < dt * 20) spawnParticle(e.wx, e.wy, rndR(-1, 1), rndR(-1, 1), 0.3, 2.0, PAL.accent);
+    if (e.marked > 0) continue;
+    /* the brand comes due */
+    e.marked = 0;
+    e.hp -= CONFIG.CHAIN_MARK_DAMAGE; e.hitFlash = 1;
+    burst(e.wx, e.wy, 18, { color: PAL.accent, smin: 3, smax: 9, lmin: 0.3, lmax: 0.7 });
+    paintBloom(e.wx, e.wy, CONFIG.KILL_BLOOM_RADIUS, CONFIG.KILL_BLOOM_STRENGTH);
+    Audio_.kill();
+    if (e.hp <= 0) killEnemy(e, i);
+  }
+}
+
 function fireBolt(wx, wy, dx, dy) {
   const off = CONFIG.BOLT_MUZZLE_OFFSET;
   bolts.push({
@@ -1263,6 +1850,12 @@ function updateFlowers(dt) {
 
     if (f.inRadius) {
       f.progress += dt / CONFIG.FLOWER_HOLD_SECONDS;
+      /* the dark notices the light — but only once you have actually committed
+         to the hold, not because you cut a corner through the ring */
+      if (CONFIG.SIEGE_ON_HOLD && !f.sieged && f.progress >= CONFIG.SIEGE_AT_PROGRESS) {
+        f.sieged = true;
+        spawnSiege(f);
+      }
       if (rnd() < dt * 22) {
         const a = rndR(0, TAU), rr = rndR(0.5, CONFIG.FLOWER_HOLD_RADIUS);
         spawnParticle(f.wx + Math.cos(a) * rr, f.wy + Math.sin(a) * rr,
@@ -1279,11 +1872,21 @@ function updateFlowers(dt) {
 function bloomFlower(f) {
   f.bloomed = true; f.progress = 1; f.bloomAnim = 0;
   paintBloom(f.wx, f.wy, CONFIG.FLOWER_BLOOM_RADIUS, 1.0);
+  /* the Boss Bloom grows the matching petal NOW, in this flower's colour, so
+     the thing on the horizon visibly answers what you just did */
+  Boss.crown[f.type] = true;
+  Boss.maxHp = Math.round(Boss.maxHp * (1 + CONFIG.BOSS_PETAL_HP));
+  Boss.hp = Boss.maxHp;
+  /* This used to float at the boss, 26+ tiles away and usually off-screen — so
+     the one moment the player needed to see cause and effect, they saw nothing.
+     Say it where they are standing. */
+  floatText(Player.wx, Player.wy - 4.0, 'THE BOSS BLOOM ANSWERS', PAL.accent, 17);
   addShake(CONFIG.SHAKE_BLOOM);
   Audio_.bloom();
   const T = FLOWER_TYPES[f.type];
-  showCard(T.name, T.tag, flowerLines(f.type), T.petal, null, f.type);
-  floatText(f.wx, f.wy - 1.8, T.name + ' OPENS', T.petal, 18);
+  showCard(T.name, T.tag, flowerLines(f.type), T.petal, null, f.type,
+           'THE BOSS BLOOM GROWS A ' + PETALS[f.type].name + ' — ' + PETALS[f.type].does);
+  floatText(f.wx, f.wy - 1.4, T.name + ' OPENS', T.petal, 18);
   burst(f.wx, f.wy, 46, { color: T.petal, smin: 3, smax: 12, lmin: 0.5, lmax: 1.2, zmax: 6 });
   burst(f.wx, f.wy, 18, { color: PAL.bloom, smin: 1, smax: 5, lmin: 0.8, lmax: 1.6 });
   if (f.type === 'heal') {
@@ -1296,15 +1899,33 @@ function bloomFlower(f) {
 /* ============================================================================
    CHESTS
    ========================================================================== */
+/* ---------------------------------------------------------------------------
+   Two bugs lived in this function, and they had the same root: the E key was
+   read INSIDE the loop.
+
+   1. Input.pressed() is edge-triggered and CONSUMES the press. Called once per
+      chest, the first chest in the array ate the keypress whether or not it was
+      the one you were standing at — so only chests[0] could ever be opened and
+      the other two were dead for the whole run.
+   2. An edge-trigger also had to land on the exact frame you were inside the
+      radius. The 3D build hit this first and moved to a held key; the isometric
+      build never got the same fix.
+
+   So: read the key ONCE, hold rather than edge, and open the NEAREST affordable
+   cache you are standing in — never an arbitrary one from array order.
+   --------------------------------------------------------------------------- */
 function updateChests(dt) {
+  const wants = Game.intent ? !!Game.intent.interact : Input.key('e');
+  let best = null, bestD = Infinity;
+
   for (const c of chests) {
     c.sway += dt;
     if (c.opened) { c.openAnim = Math.min(1, c.openAnim + dt * 2.2); continue; }
     const d = dist(Player.wx, Player.wy, c.wx, c.wy);
     c.near = d <= CONFIG.CHEST_INTERACT_RADIUS;
-    const wants = Game.intent ? Game.intent.interact : Input.pressed('e');
-    if (c.near && wants && Player.silver >= c.cost) openChest(c);
+    if (c.near && d < bestD && Player.silver >= c.cost) { best = c; bestD = d; }
   }
+  if (wants && best) openChest(best);
 }
 
 let chestsOpened = 0;
@@ -1444,6 +2065,10 @@ function wander(e, dt, scale) {
 
 function killEnemy(e, idx) {
   e.dead = true;
+  /* Violence turns into growth: the ground under a kill blooms. This is what
+     makes a 30 HP enemy interesting without giving it more health — you cannot
+     be threatened by it, but you can choose where it dies. */
+  paintBloom(e.wx, e.wy, CONFIG.KILL_BLOOM_RADIUS, CONFIG.KILL_BLOOM_STRENGTH);
   Audio_.kill();
   addHitstop(CONFIG.HITSTOP_ON_KILL);
   const base = e.kind === 'rusher' ? CONFIG.RUSHER_DROP : e.kind === 'spitter' ? CONFIG.SPITTER_DROP : CONFIG.MITE_DROP;
@@ -1461,23 +2086,90 @@ function killEnemy(e, idx) {
    WAVE_FIRST_AT, grow in size, arrive more often, and unlock enemy kinds on a
    clock so the player meets one new thing at a time.
    ========================================================================== */
+/* Every beacon you open makes the rest of the run worse — that is what turns
+   "take all three" from free value into a gamble.
+
+   ALL THREE ARE IDENTITY AT lit = 0. A player who lights nothing gets exactly
+   the curve that existed before escalation, so the difficulty lands only on the
+   route that was already winning every time. playtest.js asserts this. */
 function waveInterval(t) {
+  const lit = litCount();
+  const base = CONFIG.WAVE_INTERVAL - t * CONFIG.WAVE_INTERVAL_DECAY;
   return Math.max(CONFIG.WAVE_INTERVAL_MIN,
-                  CONFIG.WAVE_INTERVAL - t * CONFIG.WAVE_INTERVAL_DECAY);
+                  base * (1 - CONFIG.ESCALATE_INTERVAL * lit));
 }
 function waveSize(t) {
-  return Math.min(CONFIG.WAVE_SIZE_MAX,
-                  Math.round(CONFIG.WAVE_SIZE_BASE + t * CONFIG.WAVE_SIZE_PER_SEC));
+  return Math.min(CONFIG.WAVE_SIZE_MAX + CONFIG.ESCALATE_SIZE * litCount(),
+                  Math.round(CONFIG.WAVE_SIZE_BASE + t * CONFIG.WAVE_SIZE_PER_SEC)
+                  + CONFIG.ESCALATE_SIZE * litCount());
 }
 function enemyCap(t) {
-  return Math.min(CONFIG.ENEMY_CAP_MAX,
-                  Math.round(CONFIG.ENEMY_CAP_BASE + t * CONFIG.ENEMY_CAP_PER_SEC));
+  return Math.min(CONFIG.ENEMY_CAP_MAX + CONFIG.ESCALATE_CAP * litCount(),
+                  Math.round(CONFIG.ENEMY_CAP_BASE + t * CONFIG.ENEMY_CAP_PER_SEC)
+                  + CONFIG.ESCALATE_CAP * litCount());
 }
 function unlockedKinds(t) {
   const k = ['rusher'];
   if (t >= CONFIG.SPITTER_UNLOCK_AT) k.push('spitter');
   if (t >= CONFIG.MITE_UNLOCK_AT) k.push('mite');
   return k;
+}
+
+/* how many beacons are open — the one variable escalation runs on */
+function litCount() {
+  let n = 0;
+  for (const f of flowers) if (f.bloomed) n++;
+  return n;
+}
+
+/* ---------------------------------------------------------------------------
+   A siege: a wave placed around the BEACON rather than around the player.
+   findOpenSpot already takes an arbitrary centre, so this needs no new
+   placement code, and spawning inside ENEMY_AGGRO_RANGE means the existing
+   enemy AI does the rest — rushers charge, spitters set up, mites ring you.
+   It still respects enemyCap(), so a siege can never compound into a screen
+   you cannot fight out of.
+   --------------------------------------------------------------------------- */
+function spawnSiege(f) {
+  const t = Game.time;
+  const cap = enemyCap(t);
+  let budget = Math.min(
+    CONFIG.SIEGE_SIZE_BASE + CONFIG.SIEGE_SIZE_PER_LIT * litCount(),
+    Math.max(0, cap - enemies.length));
+  if (budget <= 0) return;
+
+  /* A siege ignores the unlock clock on purpose. The clock exists so a new
+     player meets one enemy at a time in open ground; a siege is something you
+     chose to trigger, and it needs spitters from the first beacon or holding a
+     ring is just target practice. */
+  let guard = 0;
+  while (budget > 0 && guard++ < 24) {
+    const kind = rnd() < CONFIG.SIEGE_SPITTER_SHARE ? 'spitter'
+               : (litCount() >= 2 && rnd() < 0.35) ? 'mite' : 'rusher';
+    const spot = findOpenSpot({
+      clearance: 1.2, margin: 3,
+      minDistFrom: [f.wx, f.wy, CONFIG.SIEGE_MIN_DIST],
+      maxDistFrom: [f.wx, f.wy, CONFIG.SIEGE_MAX_DIST],
+    });
+    if (kind === 'mite') {
+      const n = Math.min(budget, CONFIG.MITE_PER_CLUSTER);
+      for (let i = 0; i < n; i++) {
+        const a = rndR(0, TAU), r = rndR(0.5, 2.0);
+        const x = clamp(spot[0] + Math.cos(a) * r, 1.5, World.w - 1.5);
+        const y = clamp(spot[1] + Math.sin(a) * r, 1.5, World.h - 1.5);
+        if (circleHitsSolid(x, y, CONFIG.MITE_RADIUS)) continue;
+        enemies.push(makeEnemy('mite', x, y));
+      }
+      budget -= n;
+    } else {
+      enemies.push(makeEnemy(kind, spot[0], spot[1]));
+      budget -= 1;
+    }
+  }
+  /* tell the player what just happened, or it reads as bad luck */
+  addShake(7);
+  Audio_.charge();
+  floatText(f.wx, f.wy - 2.4, 'THE DARK NOTICES', PAL.blood, 16);
 }
 
 function spawnWave() {
@@ -1563,6 +2255,21 @@ function updateBolts(dt) {
       }
       if (dead) break;
 
+      /* a balm bud dies to one hit — the cost of it is noticing, not killing */
+      let poppedBud = false;
+      for (let k = buds.length - 1; k >= 0; k--) {
+        const bd = buds[k];
+        const rr2 = b.r + bd.r;
+        if (dist2(b.wx, b.wy, bd.wx, bd.wy) < rr2 * rr2) {
+          burst(bd.wx, bd.wy, 12, { color: PAL.bone, smin: 2, smax: 6, lmin: 0.15, lmax: 0.35 });
+          Audio_.hit();
+          buds.splice(k, 1);
+          poppedBud = true;
+          break;
+        }
+      }
+      if (poppedBud) { dead = true; break; }
+
       /* boss — only takes damage once it has been forced awake */
       if (!Boss.dead && Boss.active) {
         const rr = b.r + Boss.r;
@@ -1588,6 +2295,11 @@ function updateEnemyBolts(dt) {
     if (b.kind === 'petal' && rnd() < dt * 18) {
       spawnParticle(b.wx, b.wy, 0, 0, 0.28, 2.0, PAL.accent);
     }
+    /* Mid-dash the projectile belongs to ROOT REVERSAL, not to your health bar.
+       catchProjectiles() runs on the dash's own sub-steps and removes it there;
+       skipping the hit here stops a shot being consumed by a collision the
+       i-frames were already going to absorb. */
+    if (CONFIG.PLANT_ON_DASH && Player.dashTimer > 0) continue;
     if (dist2(b.wx, b.wy, Player.wx, Player.wy) < (b.r + Player.r) * (b.r + Player.r)) {
       damagePlayer(b.dmg, false);
       burst(b.wx, b.wy, 6, { color: b.kind === 'petal' ? PAL.accent : PAL.blood, smin: 2, smax: 6, lmin: 0.15, lmax: 0.35 });
@@ -1645,6 +2357,27 @@ function updateBoss(dt) {
       }
       if (B.charge >= 1) {
         B.active = true;
+        /* Lock the fight in at the moment of commitment. It cannot keep
+           updating: the boss spits mites you then kill in its own arena, so a
+           live check would eventually connect everything and every run would
+           face every petal. */
+        B.petals = { econ: B.crown.econ, heal: B.crown.heal, buff: B.crown.buff };
+        B.budCd = CONFIG.BUD_INTERVAL * 0.6;
+        B.eruptCd = CONFIG.ERUPT_INTERVAL;
+        /* The payoff: name the petals you grew, at the moment they open on you.
+           This is where a player who ignored the warnings finally connects the
+           two halves. */
+        const grown = ['buff', 'heal', 'econ'].filter(k => B.petals[k]);
+        if (grown.length) {
+          showCard('IT OPENS WHAT YOU GREW',
+                   grown.length + ' of 3 petals — you lit them',
+                   grown.map(k => PETALS[k].name + ' — ' + PETALS[k].short),
+                   PAL.accent, null, null, null);
+        } else {
+          showCard('DORMANT FORM', 'you lit nothing, so it grew nothing',
+                   ['no petals — this is the simplest fight in the game'],
+                   PAL.accent, null, null, null);
+        }
         addShake(16);
         Audio_.blip(120, 0.9, 'sawtooth', 0.18, 5.0);
         floatText(B.wx, B.wy - 3.2, 'THE BOSS BLOOM WAKES', PAL.accent, 20);
@@ -1704,11 +2437,75 @@ function updateBoss(dt) {
     const dp = dist(Player.wx, Player.wy, B.wx, B.wy);
     if (dp < CONFIG.BOSS_SWEEP_LENGTH) {
       let pa = Math.atan2(Player.wy - B.wy, Player.wx - B.wx);
-      let da = Math.atan2(Math.sin(pa - B.sweepAngle), Math.cos(pa - B.sweepAngle));
-      if (Math.abs(da) < CONFIG.BOSS_SWEEP_ARC * 0.5) damagePlayer(CONFIG.BOSS_SWEEP_DAMAGE, false);
+      /* THORNCROWN's petal: a second arm opposite the first, so orbiting at a
+         fixed radius stops being a safe answer */
+      const arms = B.petals.buff ? [B.sweepAngle, B.sweepAngle + Math.PI] : [B.sweepAngle];
+      for (const arm of arms) {
+        const da = Math.atan2(Math.sin(pa - arm), Math.cos(pa - arm));
+        if (Math.abs(da) < CONFIG.BOSS_SWEEP_ARC * 0.5) {
+          damagePlayer(CONFIG.BOSS_SWEEP_DAMAGE, false);
+          break;
+        }
+      }
     }
     if (B.sweepT >= CONFIG.BOSS_SWEEP_DURATION) {
       B.sweepState = 0; B.sweepCd = CONFIG.BOSS_SWEEP_COOLDOWN * cdMult;
+    }
+  }
+
+  /* --- BALMBLOOM's petal: a bud that heals it unless you look -------------- */
+  if (B.petals.heal) {
+    B.budCd -= dt;
+    if (B.budCd <= 0) {
+      B.budCd = CONFIG.BUD_INTERVAL * cdMult;
+      const a = rndR(0, TAU);
+      const x = clamp(B.wx + Math.cos(a) * CONFIG.BUD_DIST, 1.5, World.w - 1.5);
+      const y = clamp(B.wy + Math.sin(a) * CONFIG.BUD_DIST, 1.5, World.h - 1.5);
+      buds.push({ wx: x, wy: y, r: 0.55, life: CONFIG.BUD_LIFETIME, max: CONFIG.BUD_LIFETIME });
+      Audio_.blip(300, 0.3, 'sine', 0.07, 2.2);
+      floatText(x, y - 1.6, 'BALM BUD', FLOWER_TYPES.heal.petal, 13);
+    }
+  }
+  for (let i = buds.length - 1; i >= 0; i--) {
+    const bd = buds[i];
+    bd.life -= dt;
+    if (rnd() < dt * 16) spawnParticle(bd.wx, bd.wy, rndR(-1,1), rndR(-1,1), 0.4, 2.2, FLOWER_TYPES.heal.petal);
+    if (bd.life <= 0) {
+      /* you did not look at it */
+      B.hp = Math.min(B.maxHp, B.hp + CONFIG.BUD_HEAL);
+      floatText(B.wx, B.wy - 3.6, '+' + CONFIG.BUD_HEAL, FLOWER_TYPES.heal.core, 18);
+      burst(bd.wx, bd.wy, 20, { color: FLOWER_TYPES.heal.petal, smin: 2, smax: 8 });
+      Audio_.bloom();
+      buds.splice(i, 1);
+    }
+  }
+
+  /* --- LUNARIA's petal: marks that erupt, so standing still is not safe ----- */
+  if (B.petals.econ) {
+    B.eruptCd -= dt;
+    if (B.eruptCd <= 0) {
+      B.eruptCd = CONFIG.ERUPT_INTERVAL * cdMult;
+      for (let i = 0; i < CONFIG.ERUPT_COUNT; i++) {
+        const a = rndR(0, TAU), r = rndR(0, 4.5);
+        erupts.push({
+          wx: clamp(Player.wx + Math.cos(a) * r, 1.5, World.w - 1.5),
+          wy: clamp(Player.wy + Math.sin(a) * r, 1.5, World.h - 1.5),
+          t: CONFIG.ERUPT_DELAY, max: CONFIG.ERUPT_DELAY,
+        });
+      }
+      Audio_.blip(180, 0.35, 'sine', 0.05, 1.6);
+    }
+  }
+  for (let i = erupts.length - 1; i >= 0; i--) {
+    const er = erupts[i];
+    er.t -= dt;
+    if (er.t <= 0) {
+      if (dist(Player.wx, Player.wy, er.wx, er.wy) < CONFIG.ERUPT_RADIUS) {
+        damagePlayer(CONFIG.ERUPT_DAMAGE, false);
+      }
+      burst(er.wx, er.wy, 22, { color: FLOWER_TYPES.econ.core, smin: 3, smax: 11, lmin: 0.3, lmax: 0.7 });
+      addShake(5);
+      erupts.splice(i, 1);
     }
   }
 
@@ -2612,7 +3409,8 @@ const Look = {
   locked: false, dx: 0, dy: 0,
   lockDenied: false,          // pointer lock refused (embedded viewers often do)
   lastX: null, lastY: null,   // fallback look uses raw mouse deltas instead
-  px: null, py: null,         // absolute cursor, client coords — high-angle aiming
+  px: null, py: null,         // absolute cursor, client coords (fallback only)
+  rx: null, ry: null,         // the VIRTUAL reticle, in canvas pixels — high-angle aiming
   keys: {}, mouseDown: false,
   once: {},
   key(k) { return !!this.keys[k]; },
@@ -2636,27 +3434,58 @@ function setCameraMode(mode) {
   camModeFade = 2.4;
   Look.dx = 0; Look.dy = 0;
   if (mode === 'highangle') {
-    /* a free cursor and a captured one cannot both be true */
-    /* releasing the lock ourselves must not read as the player pressing Escape */
-    Look.suppressLockPause = true;
-    if (document.pointerLockElement) { try { document.exitPointerLock(); } catch (err) {} }
     Cam3.yaw = CONFIG3D.HIGH_YAW;
     Cam3.pitch = CONFIG3D.HIGH_PITCH;
-    if (lookCanvas) lookCanvas.style.cursor = 'crosshair';
-  } else {
-    if (lookCanvas) {
-      lookCanvas.style.cursor = 'none';
-      if (!Look.lockDenied && Game.state === STATE.PLAY && !Game.paused &&
-          lookCanvas.requestPointerLock) {
-        try { lookCanvas.requestPointerLock(); } catch (err) { Look.lockDenied = true; }
-      }
-    }
+    /* The reticle starts from wherever it already is, so swapping camera does
+       not teleport your aim across the screen. */
+    resetReticle(false);
   }
+  /* Both modes now keep the pointer captured. High-angle used to release it so
+     the cursor could roam free, which is exactly what broke inside an embed:
+     the moment the pointer crossed the frame edge the events stopped and the
+     reticle froze. It is a VIRTUAL reticle now — moved by how far the mouse
+     travels, clamped to the canvas — so it behaves the same without an edge. */
+  if (lookCanvas) lookCanvas.style.cursor = 'none';
+  if (Game.state === STATE.PLAY && !Game.paused) requestLook();
+}
+
+/* ask for the pointer; embedded viewers that refuse it fall back to absolute */
+function requestLook() {
+  if (Look.locked || Look.lockDenied || !lookCanvas || !lookCanvas.requestPointerLock) return;
+  try { lookCanvas.requestPointerLock(); } catch (err) { Look.lockDenied = true; }
+}
+function releaseLook() {
+  if (!document.pointerLockElement) return;
+  Look.suppressLockPause = true;
+  try { document.exitPointerLock(); } catch (err) { /* already gone */ }
+}
+/* the virtual reticle, in canvas pixels */
+function resetReticle(centre) {
+  const w = (typeof VW === 'number' && VW) || 1280;
+  const h = (typeof VH === 'number' && VH) || 720;
+  if (centre || Look.rx === null) { Look.rx = w / 2; Look.ry = h / 2; }
+  Look.rx = clamp(Look.rx, 0, w);
+  Look.ry = clamp(Look.ry, 0, h);
+}
+
+/* --- pause ---------------------------------------------------------------- */
+function setPaused3D(on) {
+  if (Game.state !== STATE.PLAY || Game.paused === on) return;
+  Game.paused = on;
+  /* the menu is clickable, so the system cursor comes back while it is up */
+  if (lookCanvas) lookCanvas.style.cursor = on ? 'default' : 'none';
+  if (on) { Look.mouseDown = false; Pause.idx = 0; releaseLook(); }
+  else requestLook();
+}
+function applyPause3D(id) {
+  if (id === 'resume')  { setPaused3D(false); return; }
+  if (id === 'restart') { Game.paused = false; startRun3D(); return; }
+  if (id === 'title')   { Game.paused = false; releaseLook(); Title.tab = 0; showTitle3D(); }
 }
 
 function bindInput3D(canvas) {
   lookCanvas = canvas;
-  canvas.style.cursor = isHighAngle() ? 'crosshair' : 'none';
+  canvas.style.cursor = 'default';   // the title screen has tabs to click
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (!Look.keys[k]) Look.once[k] = true;
@@ -2667,25 +3496,49 @@ function bindInput3D(canvas) {
     if (k === 'm') Audio_.muted = !Audio_.muted;
     if (k === 'f1') { CONFIG.SHOW_DEBUG = !CONFIG.SHOW_DEBUG; e.preventDefault(); }
     if (k === 'c') setCameraMode(isHighAngle() ? 'shoulder' : 'highangle');
-    /* Escape releases the cursor by browser fiat; make it actually pause too,
-       and let it toggle back out when the cursor is already free. */
-    if (k === 'escape' && Game.state === STATE.PLAY) Game.paused = !Game.paused;
-    if ((k === ' ' || k === 'p') && Game.state === STATE.PLAY) {
-      Game.paused = !Game.paused; e.preventDefault();
+    /* the title screen: SPACE starts the run, everything else drives the tabs */
+    if (Game.state === STATE.TITLE) {
+      if (k === ' ') { startRun3D(); e.preventDefault(); }
+      else if (titleKey(k)) e.preventDefault();
+      return;
+    }
+    /* --- the pause menu ---------------------------------------------------
+       ESC always MEANS pause rather than toggling: the browser releases the
+       pointer on Escape and that fires its own event, so a toggle would undo
+       itself and the menu would flicker instead of opening. */
+    if (Game.state === STATE.PLAY) {
+      if (k === 'escape') { setPaused3D(!Game.paused); e.preventDefault(); return; }
+      if (Game.paused) {
+        if (k === 'p') { setPaused3D(false); e.preventDefault(); return; }
+        const id = pauseKey(k);
+        if (id) { applyPause3D(id); e.preventDefault(); }
+        else if (['arrowup','arrowdown','w','s','enter',' '].indexOf(k) >= 0) e.preventDefault();
+        return;
+      }
+      /* SPACE used to pause here. It is the dash now, so ESC is the only way in
+         and out of the menu — which is also what the 2D build does. */
+      if (k === 'p') { setPaused3D(true); e.preventDefault(); }
     }
   });
   window.addEventListener('keyup', (e) => { Look.keys[e.key.toLowerCase()] = false; });
 
   canvas.addEventListener('mousedown', (e) => {
     Audio_.init();
-    /* a click while paused resumes; it does not also fire that frame */
-    const wantLock = !isHighAngle() && !Look.locked && !Look.lockDenied && canvas.requestPointerLock;
-    if (Game.paused) {
-      Game.paused = false;
-      if (wantLock) { try { canvas.requestPointerLock(); } catch (err) { Look.lockDenied = true; } }
+    /* On the title the mouse belongs to the tabs: no pointer lock, no firing,
+       and a stray click never throws you into a run mid-read. */
+    if (Game.state === STATE.TITLE) {
+      const r = canvas.getBoundingClientRect();
+      titleClick(e.clientX - r.left, e.clientY - r.top);
       return;
     }
-    if (wantLock) { try { canvas.requestPointerLock(); } catch (err) { Look.lockDenied = true; } }
+    /* a click on the pause menu picks an item; it never also fires the gun */
+    if (Game.paused) {
+      const r = canvas.getBoundingClientRect();
+      const id = pauseClick(e.clientX - r.left, e.clientY - r.top);
+      if (id) applyPause3D(id);
+      return;
+    }
+    requestLook();
     if (e.button === 0) Look.mouseDown = true;
   });
   window.addEventListener('mouseup', (e) => { if (e.button === 0) Look.mouseDown = false; });
@@ -2699,7 +3552,7 @@ function bindInput3D(canvas) {
       Look.mouseDown = false;
       /* losing a lock we actually had means the player hit Escape — pause,
          unless we were the ones who let it go on a camera-mode swap */
-      if (was && Game.state === STATE.PLAY && !Look.suppressLockPause) Game.paused = true;
+      if (was && Game.state === STATE.PLAY && !Look.suppressLockPause) setPaused3D(true);
       Look.suppressLockPause = false;
     }
   });
@@ -2708,19 +3561,42 @@ function bindInput3D(canvas) {
   document.addEventListener('pointerlockerror', () => { Look.lockDenied = true; });
 
   document.addEventListener('mousemove', (e) => {
-    /* always tracked: high-angle mode aims from the cursor's actual position */
     Look.px = e.clientX; Look.py = e.clientY;
-    if (Look.locked) {
-      Look.dx += e.movementX; Look.dy += e.movementY;
+    const r = lookCanvas && lookCanvas.getBoundingClientRect
+            ? lookCanvas.getBoundingClientRect() : null;
+
+    if (Game.state === STATE.TITLE && r) { titleHover(e.clientX - r.left, e.clientY - r.top); return; }
+    if (Game.paused && r) { pauseHover(e.clientX - r.left, e.clientY - r.top); return; }
+
+    /* how far the mouse moved this event, captured or not */
+    let dx, dy;
+    if (Look.locked) { dx = e.movementX; dy = e.movementY; }
+    else if (Look.lastX !== null) { dx = e.clientX - Look.lastX; dy = e.clientY - Look.lastY; }
+    else { dx = 0; dy = 0; }
+    Look.lastX = e.clientX; Look.lastY = e.clientY;
+
+    /* HIGH-ANGLE drives a virtual reticle; SHOULDER drives the camera. Both are
+       fed by the same delta, so neither depends on the pointer staying inside
+       the frame — which is what froze the aim inside an embed. */
+    if (isHighAngle()) {
+      if (Look.rx === null) resetReticle(true);
+      if (Look.locked) {
+        Look.rx = clamp(Look.rx + dx, 0, r ? r.width : VW);
+        Look.ry = clamp(Look.ry + dy, 0, r ? r.height : VH);
+      } else if (r) {
+        /* no capture available: the clamped absolute cursor, as before */
+        Look.rx = clamp(e.clientX - r.left, 0, r.width);
+        Look.ry = clamp(e.clientY - r.top, 0, r.height);
+      }
+      Look.dx = 0; Look.dy = 0;
       return;
     }
-    if (Look.lastX !== null) {
-      Look.dx += (e.clientX - Look.lastX);
-      Look.dy += (e.clientY - Look.lastY);
-    }
-    Look.lastX = e.clientX; Look.lastY = e.clientY;
+    Look.dx += dx; Look.dy += dy;
   });
-  window.addEventListener('blur', () => { Look.keys = {}; Look.mouseDown = false; });
+  window.addEventListener('blur', () => {
+    Look.keys = {}; Look.mouseDown = false;
+    if (Game.state === STATE.PLAY && !Game.paused) setPaused3D(true);
+  });
 }
 
 /* --- camera update -----------------------------------------------------------
@@ -2751,7 +3627,11 @@ function screenRayToGround(px, py, w, h) {
   const ndcX = (px / w) * 2 - 1;
   const ndcY = 1 - (py / h) * 2;
   const tanV = Math.tan(camFov() / 2);
-  const tanH = tanV * (w / Math.max(1, h));
+  /* The scene buffer is rounded to whole pixels and adaptively scaled, so its
+     aspect is NOT exactly the window's. The projection matrix is built from the
+     buffer, so the ray has to be too, or the round-trip is off by a fraction of
+     a pixel per hundred pixels from centre. */
+  const tanH = tanV * renderAspect(w, h);
   const F = Cam3.fwd, R = Cam3.right, U = Cam3.up;
   const dx = F[0] + R[0] * ndcX * tanH + U[0] * ndcY * tanV;
   const dy = F[1] + R[1] * ndcX * tanH + U[1] * ndcY * tanV;
@@ -2766,10 +3646,13 @@ function screenRayToGround(px, py, w, h) {
 function cursorCanvasPos() {
   const w = (typeof VW === 'number' && VW) || 1280;
   const h = (typeof VH === 'number' && VH) || 720;
-  if (Look.px === null || !lookCanvas || !lookCanvas.getBoundingClientRect) return [w / 2, h / 2, w, h];
+  if (Look.rx === null || !lookCanvas || !lookCanvas.getBoundingClientRect) return [w / 2, h / 2, w, h];
   const r = lookCanvas.getBoundingClientRect();
   if (!r.width || !r.height) return [w / 2, h / 2, w, h];
-  return [Look.px - r.left, Look.py - r.top, r.width, r.height];
+  /* The reticle is virtual and already clamped where it is moved, so there is
+     no window edge for it to escape past — with the pointer captured there is
+     no system cursor to leave the frame at all. */
+  return [clamp(Look.rx, 0, r.width), clamp(Look.ry, 0, r.height), r.width, r.height];
 }
 
 function updateCamera3D(dt) {
@@ -2902,6 +3785,7 @@ function buildIntent3D() {
        being inside the cache radius, which is why opening one felt broken */
     interact: Look.key('e'),
     fire: Look.mouseDown,
+    dash: Look.key(' ') || Look.key('shift'),
   };
 }
 /* ============================================================================
@@ -2911,6 +3795,77 @@ function buildIntent3D() {
    per frame is cheaper than tracking a scene graph, and it means the renderer
    reads straight off simulation state with nothing to keep in sync.
    ========================================================================== */
+
+/* --- the balm bud and the lunar marks, in 3D -------------------------------- */
+function propsBuds() {
+  for (const bd of buds) {
+    const T = FLOWER_TYPES.heal;
+    const t = clamp(bd.life / bd.max, 0, 1);
+    const y = 0.9 + Math.sin(bd.life * 6) * 0.08;
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * TAU + bd.life * 2;
+      lit(B.petal, bd.wx, y, bd.wy, a, 0, -0.1, 0.5, 0.5, 0.5, T.petal,
+          mixRgb(hexToRgb(T.petal), [0, 0, 0], 0.5));
+    }
+    lit(B.sphere, bd.wx, y, bd.wy, 0, 0, 0, 0.22, 0.22, 0.22, T.core, T.core);
+    glow(bd.wx, y, bd.wy, 2.4 + (1 - t) * 1.6, T.core, 0.35 + (1 - t) * 0.3);
+    decal(bd.wx, bd.wy, 1.5, T.petal, 0.35 + (1 - t) * 0.35, 1, 1);
+  }
+}
+function propsErupts() {
+  for (const er of erupts) {
+    const t = 1 - clamp(er.t / er.max, 0, 1);
+    const T = FLOWER_TYPES.econ;
+    decal(er.wx, er.wy, CONFIG.ERUPT_RADIUS, T.petal, 0.18 + t * 0.5, 1, 1);
+    decal(er.wx, er.wy, CONFIG.ERUPT_RADIUS * t, T.core, 0.10 + t * 0.22, 0, 1);
+    glow(er.wx, 0.4, er.wy, 1.2 + t * 2.4, T.core, 0.10 + t * 0.35);
+  }
+}
+
+/* --- ROOT REVERSAL, in 3D ---------------------------------------------------
+   Same read as the isometric build: roots first, then the flower erupts, and a
+   hybrid stacks one petal ring per kind it carries. */
+function propsPlanted() {
+  for (const pl of planted) {
+    if (dist(pl.wx, pl.wy, Cam3.x, Cam3.z) > CONFIG3D.CULL_DIST) continue;
+    const grow = 1 - clamp(pl.grow / CONFIG.PLANT_GROW_TIME, 0, 1);
+    const open = ease(grow);
+    const t = clamp(pl.life / pl.max, 0, 1);
+    const fade = t < 0.18 ? t / 0.18 : 1;
+    const T = PLANT_KINDS[pl.kinds[0]];
+
+    const stalkH = 0.5 + open * 1.1;
+    lit(B.cyl, pl.wx, 0, pl.wy, 0, Math.sin(pl.sway) * 0.05, 0,
+        0.12, stalkH, 0.12, mixRgb(hexToRgb(PAL.bloom), RGB.ink, 0.4), null);
+
+    const hy = stalkH;
+    for (let k = 0; k < pl.kinds.length; k++) {
+      const K = PLANT_KINDS[pl.kinds[k]];
+      const scale = 1 - k * 0.24;
+      const dir = k % 2 ? -1 : 1;
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU + pl.sway * 0.35 * dir + k * 0.5;
+        lit(B.petal, pl.wx, hy + k * 0.1, pl.wy, a, 0, lerp(-1.1, 0.2, open),
+            0.6 * scale * (0.4 + open * 0.6), 0.6 * scale, 0.6 * scale,
+            K.color, mixRgb(hexToRgb(K.color), [0, 0, 0], 0.55));
+      }
+    }
+    const cr = 0.14 + open * 0.12;
+    lit(B.sphere, pl.wx, hy + 0.06, pl.wy, 0, 0, 0, cr, cr, cr, T.core, T.core);
+    glow(pl.wx, hy + 0.06, pl.wy, 1.6 + open * 1.4, T.core, 0.35 * fade);
+
+    /* the roots, as a ground ring that fades as it establishes */
+    decal(pl.wx, pl.wy, 0.5 + open * 1.0, T.color, (0.4 - open * 0.15) * fade, 1, 1);
+    if (pl.lash > 0) {
+      decal(pl.wx, pl.wy, CONFIG.PLANT_THORN_RADIUS,
+            FLOWER_TYPES.buff.petal, 0.42 * pl.lash, 1, 1);
+    }
+    if (pl.kinds.indexOf('moon') >= 0 && grow >= 1) {
+      decal(pl.wx, pl.wy, CONFIG.PLANT_MOON_RANGE, FLOWER_TYPES.econ.petal, 0.05 * fade, 1, 1);
+    }
+    shadow3(pl.wx, pl.wy, 0.45 * open);
+  }
+}
 
 function buildFrame() {
   for (const k in B) batchReset(B[k]);
@@ -2925,6 +3880,9 @@ function buildFrame() {
   propsPickups();
   propsEnemies();
   propsBoss();
+  propsBuds();
+  propsErupts();
+  propsPlanted();
   propsPortal();
   propsPlayer();
   propsBolts();
@@ -3086,6 +4044,10 @@ function propsEnemies() {
           darting ? '#6B1D2C' : '#3A0F18');
       glow(e.wx, y, e.wy, darting ? 1.5 : 1.0, PAL.blood, darting ? 0.42 : 0.22);
     }
+    if (e.marked) {
+      const m = clamp(e.marked / CONFIG.CHAIN_MARK_TIME, 0, 1);
+      decal(e.wx, e.wy, 0.5 + m * 1.3, PAL.accent, 0.35 + (1 - m) * 0.5, 1, 1);
+    }
     shadow3(e.wx, e.wy, e.r * 1.5);
 
     /* health pip, only once damaged */
@@ -3129,6 +4091,20 @@ function propsBoss() {
         innerCol, Bs.dead ? '#2A7A85' : null);
   }
 
+  /* the crown: one oversized petal per beacon grown into it, in that beacon's
+     colour. In third person this is the horizon changing while you play. */
+  const crown3 = [['econ', 0], ['heal', TAU / 3], ['buff', TAU * 2 / 3]];
+  for (const [k, off] of crown3) {
+    if (!Bs.crown[k]) continue;
+    const T = FLOWER_TYPES[k];
+    const a = off + Bs.sway * 0.05;
+    const o2 = Math.max(open, 0.45);
+    lit(B.petal, hx, hy + 0.3, hz, a, 0, lerp(-0.9, 0.22, o2) + da * 0.25,
+        CONFIG3D.BOSS_PETAL * (1.45 + da * 0.5), CONFIG3D.BOSS_PETAL * 1.2,
+        CONFIG3D.BOSS_PETAL * 1.2, T.petal, mixRgb(hexToRgb(T.petal), [0, 0, 0], 0.55));
+    glow(hx + Math.sin(a) * 2.2, hy + 0.5, hz + Math.cos(a) * 2.2, 2.2, T.core, 0.30);
+  }
+
   const coreR = 0.5 + open * 0.28 + da * 0.4;
   lit(B.sphere, hx, hy + 0.1, hz, 0, 0, 0, coreR, coreR, coreR,
       Bs.dead ? '#FFFFFF' : (Bs.active ? PAL.accent : '#1E1A33'),
@@ -3145,19 +4121,22 @@ function propsBoss() {
     decal(Bs.wx, Bs.wy, CONFIG.BOSS_TRIGGER_RADIUS, PAL.accent, pulse, 1,
           Bs.charge > 0 && !Bs.active ? Bs.charge : 1);
 
-    /* the rotating light-lash */
+    /* the rotating light-lash — both arms when Thorncrown grew the second */
     if (Bs.active && Bs.sweepState > 0) {
       const wind = Bs.sweepState === 1;
       const t = wind ? Bs.sweepT / CONFIG.BOSS_SWEEP_WINDUP : 1;
       const len = CONFIG.BOSS_SWEEP_LENGTH;
       const steps = 9;
-      for (let i = 1; i <= steps; i++) {
-        const r = (i / steps) * len;
-        const x = Bs.wx + Math.cos(Bs.sweepAngle) * r;
-        const z = Bs.wy + Math.sin(Bs.sweepAngle) * r;
-        const a = wind ? 0.10 + t * 0.16 : 0.42;
-        decal(x, z, 0.5 + r * CONFIG.BOSS_SWEEP_ARC * 0.5, PAL.accent, a, 0, 1);
-        if (!wind) glow(x, 0.5, z, 1.6, PAL.accent, 0.28);
+      const arms = Bs.petals.buff ? [Bs.sweepAngle, Bs.sweepAngle + Math.PI] : [Bs.sweepAngle];
+      for (const arm of arms) {
+        for (let i = 1; i <= steps; i++) {
+          const r = (i / steps) * len;
+          const x = Bs.wx + Math.cos(arm) * r;
+          const z = Bs.wy + Math.sin(arm) * r;
+          const a = wind ? 0.10 + t * 0.16 : 0.42;
+          decal(x, z, 0.5 + r * CONFIG.BOSS_SWEEP_ARC * 0.5, PAL.accent, a, 0, 1);
+          if (!wind) glow(x, 0.5, z, 1.6, PAL.accent, 0.28);
+        }
       }
     }
   }
@@ -3249,6 +4228,11 @@ function txt(s, x, y, size, color, align, weight) {
   ctx.fillStyle = color;
   ctx.fillText(s, x, y);
   ctx.textAlign = 'left';
+}
+/* what txt will actually draw, without drawing it */
+function txtWidth(s, size, weight) {
+  ctx.font = (weight || 600) + ' ' + size + 'px "Avenir Next", "Segoe UI", system-ui, sans-serif';
+  return ctx.measureText(s).width;
 }
 function txtL(s, x, y, size, color, align, spacing) {
   ctx.font = '600 ' + size + 'px "Avenir Next", "Segoe UI", system-ui, sans-serif';
@@ -3372,6 +4356,20 @@ function flowerGlyph(cx, cy, s, color, lit, progress) {
   ctx.restore();
 }
 
+/* How much of the plateau you woke. Shared by the meter and the end card so the
+   word you see mid-run is the word you finish on. */
+const BLOOM_BANDS = [
+  { at: 0.00, name: 'YOU PASSED THROUGH' },
+  { at: 0.31, name: 'THE PLATEAU STIRS' },
+  { at: 0.56, name: 'THE GARDEN REMEMBERS YOU' },
+  { at: 0.75, name: 'FULL BLOOM' },
+];
+function bloomBand(pct) {
+  let b = BLOOM_BANDS[0];
+  for (const t of BLOOM_BANDS) if (pct >= t.at) b = t;
+  return b;
+}
+
 /* ============================================================================
    THE HUD
    ========================================================================== */
@@ -3420,6 +4418,21 @@ function drawHUD() {
   ctx.strokeRect(bx - 3, by - 3, bw + 6, bh + 6);
   txtL(Math.ceil(Player.hp) + ' / ' + Math.round(Player.maxHp), bx, by - 12, 11, hexA(PAL.bone, 0.75), 'left', 1.2);
 
+  /* --- dash cooldown -------------------------------------------------------
+     A pip under the vitality bar. It has to be readable without looking away
+     from the fight, so it is a bar that drains rather than a number. */
+  {
+    const dw = 74, dx = bx, dy = by + bh + 8;
+    const ready = Player.dashCd <= 0;
+    const k = ready ? 1 : 1 - Player.dashCd / CONFIG.DASH_COOLDOWN;
+    ctx.fillStyle = 'rgba(13,11,22,0.8)';
+    ctx.fillRect(dx - 2, dy - 2, dw + 4, 7);
+    ctx.fillStyle = ready ? hexA(PAL.bloom, 0.85) : hexA(PAL.bone, 0.30);
+    ctx.fillRect(dx, dy, dw * k, 3);
+    txtL(ready ? 'SPACE  DASH' : 'DASH', dx + dw + 9, dy + 4, 7.5,
+         hexA(ready ? PAL.bloom : PAL.bone, ready ? 0.55 : 0.22), 'left', 1.4);
+  }
+
   /* --- seed / silver counter ---------------------------------------------- */
   const scx = bx + 6, scy = by - 40;
   ctx.fillStyle = PAL.silver;
@@ -3463,28 +4476,30 @@ function drawHUD() {
     ctx.fillRect(VW / 2 - w / 2, M + 40, w, 4);
     ctx.fillStyle = PAL.blood;
     ctx.fillRect(VW / 2 - w / 2, M + 40, w * g, 4);
-    txtL('THE DARK IS RECLAIMING THE GROUND', VW / 2, M + 60, 10, hexA(PAL.blood, 0.9), 'center', 2);
+    txtL('THE WITHER  ·  ' + tLeft.toFixed(1) + 's', VW / 2, M + 60, 10, hexA(PAL.blood, 0.9), 'center', 2);
   } else {
     txtL('BEFORE THE LIGHT FADES', VW / 2, M + 48, 9, hexA(PAL.bone, 0.34), 'center', 2.4);
   }
 
-  /* --- ground reclaimed -------------------------------------------------------
-     NOT a completion meter. Three beacons and the Boss Bloom can only ever reach
-     about 42% of the plateau; the rest is out of range of any light in the run.
-     The bar is drawn at true scale — it used to be multiplied by 1.7, which made
-     it disagree with its own number — and a tick marks this seed's ceiling so a
-     perfect run doesn't read as unfinished. */
+  /* --- bloom -------------------------------------------------------------------
+     This was GROUND RECLAIMED, a progress bar toward a fixed ~42% ceiling that
+     every complete run hit exactly — which made it a readout, not information.
+     Now that kills and dashes bloom the ground there is no ceiling, so it is a
+     SCORE: how much of the plateau you woke on the way through. The question
+     stops being "did I finish" and becomes "how much did I dare grow". */
   const pct = bloomPercent();
   const pw = 180, px = VW - M - pw, py = M + 26;
-  txtL('GROUND RECLAIMED', VW - M, M + 12, 9, hexA(PAL.bloom, 0.45), 'right', 2.4);
+  txtL('BLOOM', VW - M, M + 12, 9, hexA(PAL.bloom, 0.45), 'right', 2.4);
   ctx.fillStyle = 'rgba(13,11,22,0.75)';
   ctx.fillRect(px - 2, py - 2, pw + 4, 10);
   ctx.fillStyle = hexA(PAL.bloom, 0.85);
   ctx.fillRect(px, py, pw * clamp(pct, 0, 1), 6);
-  /* the ceiling tick: everything this plateau can be made to light */
-  const cw = pw * clamp(World.ceiling, 0, 1);
-  ctx.fillStyle = hexA(PAL.bone, 0.38);
-  ctx.fillRect(px + cw, py - 4, 1.5, 14);
+  /* band marks, so the bar reads as a score with tiers rather than a target */
+  for (const t of BLOOM_BANDS) {
+    if (t.at <= 0) continue;
+    ctx.fillStyle = hexA(PAL.bone, pct >= t.at ? 0.30 : 0.13);
+    ctx.fillRect(px + pw * t.at, py - 3, 1, 12);
+  }
   /* vine along the top of the meter */
   ctx.strokeStyle = hexA(PAL.bloom, 0.35); ctx.lineWidth = 1.2;
   ctx.beginPath(); ctx.moveTo(px, py - 3);
@@ -3494,9 +4509,7 @@ function drawHUD() {
   }
   ctx.stroke();
   txt(Math.round(pct * 100) + '%', VW - M, py + 28, 15, hexA(PAL.bloom, 0.9), 'right');
-  /* say the ceiling out loud, so 43% never reads as a job half done */
-  txtL(Math.round(World.ceiling * 100) + '% IS ALL THERE IS', VW - M, py + 42, 7.5,
-       hexA(PAL.bone, 0.32), 'right', 1.4);
+  txtL(bloomBand(pct).name, VW - M, py + 42, 7.5, hexA(PAL.bone, 0.42), 'right', 1.4);
 
   /* --- beacon tracker -------------------------------------------------------- */
   const trackY = py + 70;
@@ -3508,15 +4521,32 @@ function drawHUD() {
     /* the one-word promise, so the tracker says what each beacon is FOR */
     txtL(T.effect, gx, trackY + 26, 8,
          hexA(f.bloomed ? T.petal : PAL.bone, f.bloomed ? 0.85 : 0.3), 'center', 1.2);
+    /* ...and what it cost, in the boss's colour, for as long as the run lasts.
+       The card is gone after 5 seconds; this is the standing reminder that the
+       thing across the map is wearing what you lit. */
+    if (f.bloomed) {
+      txtL(PETALS[f.type].name.replace(' PETAL', ''), gx, trackY + 38, 7,
+           hexA(PAL.accent, 0.8), 'center', 1);
+    }
   }
-  txtL('BEACONS', VW - M, trackY + 44, 9, hexA(PAL.bone, 0.34), 'right', 2.2);
+  txtL('BEACONS', VW - M, trackY + 56, 9, hexA(PAL.bone, 0.34), 'right', 2.2);
+  /* one line, always on: how much of the boss you have built */
+  const lit3 = flowers.filter(f => f.bloomed).length;
+  if (lit3 > 0 && !Boss.dead) {
+    txtL('BOSS BLOOM  ' + lit3 + '/3 PETALS', VW - M, trackY + 70, 8,
+         hexA(PAL.accent, 0.7), 'right', 1.6);
+  }
 
   /* --- run seed -------------------------------------------------------------- */
   if (CONFIG.SHOW_SEED) {
     txtL('SEED ' + Game.seed, M, M + 14, 9, hexA(PAL.bone, 0.26), 'left', 1.8);
   }
-  txtL('WASD MOVE  ·  AIM + HOLD CLICK TO FIRE  ·  [E] CACHE  ·  [R] RESTART  ·  [M] MUTE',
+  txtL('WASD MOVE  ·  HOLD CLICK TO FIRE  ·  [SPACE] DASH  ·  [E] CACHE  ·  [ESC] MENU',
     VW / 2, VH - 16, 9, hexA(PAL.bone, 0.22), 'center', 2);
+
+  /* --- THE LAST BLOOM -------------------------------------------------------- */
+  drawChainMeter();
+  drawWitherBanner();
 
     /* --- notice cards ---------------------------------------------------------- */
   drawCards();
@@ -3542,7 +4572,12 @@ function drawCards() {
   const a = Math.min(inA, outA);
   if (a <= 0.01) return;
 
-  const w = 330, h = c.lines.length > 1 ? 108 : 88;
+  /* The cost line is built from the petal names, so its length is not something
+     this layout can assume. Wrap it to the card instead of letting it run out
+     of both sides, and grow the card by however many lines that took. */
+  const warnLines = c.warn ? wrapTxtL(c.warn, 348 - 28, 8.5, 1.2) : null;
+  const w = 348, h = (c.lines.length > 1 ? 108 : 88) +
+                     (warnLines ? 16 + warnLines.length * 11 : 0);
   const x = VW / 2 - w / 2;
   const y = VH * 0.60 + (1 - inA) * 14;
 
@@ -3557,14 +4592,46 @@ function drawCards() {
   ctx.strokeStyle = hexA(c.color, 0.35); ctx.lineWidth = 1; ctx.stroke();
   if (c.iconId) itemIcon(c.iconId, ix, iy, 24, c.color);
   else if (c.glyph) flowerGlyph(ix, iy, 17, c.color, true, 1);
+  else bossGlyph(ix, iy, 15);   // the commit card — the thing it is about
 
   const tx = x + 68;
   txtL(c.title, tx, y + 28, 15, c.color, 'left', 3);
   txt(c.sub, tx, y + 46, 11, hexA(PAL.bone, 0.6), 'left', 400);
+  /* Shrink the body to fit rather than trusting it: the commit card's lines are
+     assembled from whichever petals you grew, so their length is not fixed. */
+  const bodyW = w - 68 - 14;
+  let bs = 11;
+  for (const ln of c.lines) {
+    while (bs > 8.5 && txtWidth('·  ' + ln, bs, 600) > bodyW) bs -= 0.25;
+  }
   for (let i = 0; i < c.lines.length; i++) {
-    txt('·  ' + c.lines[i], tx, y + 64 + i * 15, 11, hexA(PAL.bone, 0.85), 'left', 600);
+    txt('·  ' + c.lines[i], tx, y + 64 + i * 15, bs, hexA(PAL.bone, 0.85), 'left', 600);
+  }
+  /* the cost, set apart and in the boss's cyan so it does not read as a fourth
+     benefit — this is the line that teaches the whole mechanic */
+  if (warnLines) {
+    const top = y + h - 10 - warnLines.length * 11;
+    ctx.fillStyle = hexA(PAL.accent, 0.18);
+    ctx.fillRect(x + 12, top - 9, w - 24, 1);
+    for (let i = 0; i < warnLines.length; i++) {
+      txtL(warnLines[i], x + w / 2, top + i * 11, 8.5, hexA(PAL.accent, 0.95), 'center', 1.2);
+    }
   }
   ctx.restore();
+}
+
+/* Greedy word wrap measured with the same tracking txtL will draw with. */
+function wrapTxtL(s, maxW, size, spacing) {
+  const words = s.split(' ');
+  const out = [];
+  let line = '';
+  for (const word of words) {
+    const next = line ? line + ' ' + word : word;
+    if (line && txtLWidth(next, size, spacing) > maxW) { out.push(line); line = word; }
+    else line = next;
+  }
+  if (line) out.push(line);
+  return out;
 }
 
 function drawCrosshair() {
@@ -3619,16 +4686,73 @@ function drawTitleFlower(cx, cy, s, t) {
   ctx.restore();
 }
 
-function drawTitle() {
-  const t = performance.now() / 1000;
-  /* ground */
+/* ============================================================================
+   TITLE SCREEN — four tabs, everything the player needs before their first run
+
+   Shared by BOTH builds. The 2D build paints a skyline behind it; the 3D build
+   puts the live plateau behind it and dims. Every number on these tabs is read
+   from CONFIG at draw time, so the screen cannot drift away from the game.
+
+   SPACE starts the run. The mouse is for the tabs and nothing else — clicking
+   the background does NOT start, or you would never get to read anything.
+   ========================================================================== */
+
+const Title = {
+  tab: 0,
+  names: ['HOW TO PLAY', 'BEACONS', 'CACHES', 'ENEMIES', 'STATS'],
+  rects: [],          // virtual-space tab boxes, rebuilt every draw
+  mx: -9999, my: -9999,   // cursor in VIRTUAL space
+  hot: -1,
+  scale: 1, ox: 0, oy: 0,
+  boxW: 0, boxH: 0,   // the virtual box, published so harnesses can't go stale
+  /* worst (drawn width / available width) of anything self-fitting on the tab
+     being drawn. The strips are built from CONFIG, so a retune can lengthen one
+     past the panel — verify_title.js watches this rather than trusting the eye. */
+  fit: 0,
+  /* the lowest body line drawn on the tab, and the panel bottom it must stay
+     above. fit watches WIDTH; this watches HEIGHT, because a row that ran off
+     the bottom of the panel used to sail straight past every assertion. */
+  fitV: 0, panelBottom: 0,
+  rows: [],           // [x, y, w, size] of every body row drawn on this tab
+};
+
+/* screen px -> the virtual 980x700 space the screen is laid out in */
+function titleToVirtual(sx, sy) {
+  return [(sx - Title.ox) / Title.scale, (sy - Title.oy) / Title.scale];
+}
+function titleHover(sx, sy) {
+  const v = titleToVirtual(sx, sy);
+  Title.mx = v[0]; Title.my = v[1];
+}
+/* returns true if the click landed on a tab, so callers know to swallow it */
+function titleClick(sx, sy) {
+  const v = titleToVirtual(sx, sy);
+  for (let i = 0; i < Title.rects.length; i++) {
+    const r = Title.rects[i];
+    if (v[0] >= r[0] && v[0] <= r[0] + r[2] && v[1] >= r[1] && v[1] <= r[1] + r[3]) {
+      if (Title.tab !== i) { Title.tab = i; Audio_.pickup(); }
+      return true;
+    }
+  }
+  return false;
+}
+/* 1-4, arrows and Tab also move between tabs — reading should not need a mouse */
+function titleKey(k) {
+  const n = Title.names.length;
+  if (k >= '1' && k <= String(n)) { Title.tab = +k - 1; Audio_.pickup(); return true; }
+  if (k === 'arrowright' || k === 'tab') { Title.tab = (Title.tab + 1) % n; Audio_.pickup(); return true; }
+  if (k === 'arrowleft')  { Title.tab = (Title.tab + n - 1) % n; Audio_.pickup(); return true; }
+  return false;
+}
+
+/* --- the painted backdrop (2D build only; 3D has a live plateau behind) ------ */
+function drawTitleBackdrop() {
   const g = ctx.createLinearGradient(0, 0, 0, VH);
   g.addColorStop(0, PAL.ink);
   g.addColorStop(0.62, PAL.base);
   g.addColorStop(1, '#0A1A0F');
   ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH);
 
-  /* a faint band of far-off bloom along the horizon */
   const hz = VH * 0.62;
   const hg = ctx.createLinearGradient(0, hz - 150, 0, hz + 30);
   hg.addColorStop(0, hexA(PAL.bloom, 0));
@@ -3637,7 +4761,6 @@ function drawTitle() {
   ctx.fillStyle = hg;
   ctx.fillRect(0, hz - 150, VW, 180);
 
-  /* distant monolith silhouettes, all standing on the same ground line */
   for (let i = 0; i < 18; i++) {
     const h = hash2(i, 7), h2 = hash2(i, 13);
     const x = (i / 18) * VW + h * 46 - 22;
@@ -3645,13 +4768,11 @@ function drawTitle() {
     const ht = 70 + h2 * 280;
     ctx.fillStyle = 'rgba(31,22,40,' + (0.55 + h * 0.35) + ')';
     ctx.fillRect(x, hz - ht, w, ht + 60);
-    /* a cold rim on the lit edge so they read as stone, not bars */
     ctx.fillStyle = 'rgba(96,104,132,' + (0.06 + h2 * 0.07) + ')';
     ctx.fillRect(x, hz - ht, Math.max(2, w * 0.16), ht + 60);
     ctx.fillStyle = 'rgba(150,162,190,' + (0.05 + h * 0.06) + ')';
     ctx.fillRect(x, hz - ht, w, 2.5);
   }
-  /* a couple of distant beacons cutting through */
   for (const [bx, bs] of [[VW * 0.18, 0.7], [VW * 0.82, 0.5], [VW * 0.63, 0.35]]) {
     const by = VH * 0.6;
     ctx.globalCompositeOperation = 'lighter';
@@ -3666,32 +4787,725 @@ function drawTitle() {
   }
   ctx.fillStyle = 'rgba(13,11,22,0.55)';
   ctx.fillRect(0, 0, VW, VH);
+}
 
-  drawTitleFlower(VW / 2, VH * 0.31, Math.min(VW, VH) * 0.10, t);
+/* --- the screen itself --------------------------------------------------------
+   Laid out once in a 980x700 virtual space and scaled to fit, so the same code
+   reads correctly on a laptop and on a 1440p monitor. --------------------------- */
+const T_W = 980, T_H = 748;
 
-  txtL('DUSKPETAL', VW / 2, VH * 0.31 + Math.min(VW, VH) * 0.19, Math.min(54, VW * 0.075), PAL.bone, 'center', 12);
-  txtL('SIXTY SECONDS BEFORE THE LIGHT FADES', VW / 2, VH * 0.31 + Math.min(VW, VH) * 0.19 + 26,
-    11, hexA(PAL.bloom, 0.55), 'center', 4);
+function drawTitleScreen(opts) {
+  const o = opts || {};
+  const t = performance.now() / 1000;
 
-  const lines = [
+  const S = clamp(Math.min(VW / T_W, VH / T_H), 0.52, 1.30);
+  Title.scale = S; Title.ox = VW / 2; Title.oy = VH / 2;
+  Title.boxW = T_W; Title.boxH = T_H;
+
+  ctx.save();
+  ctx.translate(VW / 2, VH / 2);
+  ctx.scale(S, S);
+
+  /* --- mark and name ------------------------------------------------------ */
+  drawTitleFlower(0, -292, 30, t);
+  txtL('DUSKPETAL', 0, -228, 46, PAL.bone, 'center', 11);
+
+  /* The goal, stated plainly. A new player should be able to read this one line
+     and know exactly what winning is. */
+  txtL('LIGHT THE THREE BEACONS  ·  KILL THE BOSS BLOOM  ·  LEAVE THROUGH ITS PORTAL',
+       0, -202, 11, hexA(PAL.bloom, 0.82), 'center', 2.6);
+  txtL('ALL OF IT INSIDE ' + CONFIG.LIGHT_SECONDS + ' SECONDS',
+       0, -184, 10, hexA(PAL.bone, 0.58), 'center', 2.6);
+
+  /* --- tabs --------------------------------------------------------------- */
+  const tw = 128, th = 30, gap = 6;
+  const total = Title.names.length * tw + (Title.names.length - 1) * gap;
+  let tx = -total / 2;
+  const ty = -158;
+  Title.rects.length = 0;
+  Title.hot = -1;
+  for (let i = 0; i < Title.names.length; i++) {
+    const r = [tx, ty, tw, th];
+    Title.rects.push(r);
+    const on = Title.tab === i;
+    const hov = Title.mx >= tx && Title.mx <= tx + tw && Title.my >= ty && Title.my <= ty + th;
+    if (hov) Title.hot = i;
+    ctx.fillStyle = on ? 'rgba(139,232,161,0.10)' : hov ? 'rgba(201,214,206,0.06)' : 'rgba(13,11,22,0.55)';
+    ctx.fillRect(tx, ty, tw, th);
+    ctx.strokeStyle = on ? hexA(PAL.bloom, 0.55) : hexA(PAL.bone, hov ? 0.30 : 0.14);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(tx + 0.5, ty + 0.5, tw - 1, th - 1);
+    txtL(Title.names[i], tx + tw / 2, ty + 19, 9.5,
+         on ? PAL.bloom : hexA(PAL.bone, hov ? 0.8 : 0.45), 'center', 1.8);
+    /* the lit tab keeps a bar under it, so the panel reads as its body */
+    if (on) { ctx.fillStyle = hexA(PAL.bloom, 0.55); ctx.fillRect(tx, ty + th - 2, tw, 2); }
+    tx += tw + gap;
+  }
+
+  /* --- panel -------------------------------------------------------------- */
+  const pw = 700, ph = 408, px = -pw / 2, py = ty + th + 10;
+  vinePanel(px, py, pw, ph, 0.88, PAL.bloom);
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(px, py, pw, ph); ctx.clip();
+  Title.fit = 0;
+  Title.fitV = 0;
+  Title.rows.length = 0;
+  Title.panelBottom = py + ph - 8;
+  const pad = 26;
+  if      (Title.tab === 0) tabHowToPlay(px + pad, py + pad, pw - pad * 2, o);
+  else if (Title.tab === 1) tabBeacons(px + pad, py + pad, pw - pad * 2);
+  else if (Title.tab === 2) tabCaches(px + pad, py + pad, pw - pad * 2);
+  else if (Title.tab === 3) tabEnemies(px + pad, py + pad, pw - pad * 2);
+  else                      tabStats(px + pad, py + pad, pw - pad * 2);
+  ctx.restore();
+
+  /* --- footer ------------------------------------------------------------- */
+  const blink = 0.55 + Math.sin(t * 3.2) * 0.45;
+  txtL('PRESS  SPACE  TO  BEGIN', 0, py + ph + 34, 15, hexA(PAL.bone, blink), 'center', 5);
+  txtL('CLICK A TAB, OR 1-' + Title.names.length + ' / ARROWS  ·  M MUTE  ·  ?seed=NUMBER REPLAYS A RUN',
+       0, py + ph + 56, 9, hexA(PAL.bone, 0.36), 'center', 1.8);
+
+  ctx.restore();
+}
+
+/* --- small shared bits for the tab bodies ------------------------------------- */
+function tHead(x, y, s, col) { txtL(s, x, y, 10, hexA(col || PAL.bloom, 0.8), 'left', 2.4); }
+/* Every tab used to open with a paragraph. The tabs carry their own meaning, so
+   what is left is one strip of the facts a sentence was carrying — read as data,
+   not read as prose. */
+function tStrip(x, y, w, parts) {
+  const str = parts.join('   ·   ');
+  /* Shrink to fit rather than trusting the string to be short enough: the
+     enemies strip ran off both ends of the panel, and every one of these is
+     built from CONFIG, so any retune can change its length. */
+  let size = 8.5;
+  while (size > 6.2 && txtLWidth(str, size, 1.8) > w) size -= 0.25;
+  Title.fit = Math.max(Title.fit, txtLWidth(str, size, 1.8) / w);
+  txtL(str, x + w / 2, y, size, hexA(PAL.bone, 0.40), 'center', 1.8);
+  ctx.fillStyle = hexA(PAL.bone, 0.10);
+  ctx.fillRect(x, y + 12, w, 1);
+}
+
+/* what txtL will actually draw, without drawing it */
+function txtLWidth(s, size, spacing) {
+  ctx.font = '600 ' + size + 'px "Avenir Next", "Segoe UI", system-ui, sans-serif';
+  const sp = spacing === undefined ? size * 0.18 : spacing;
+  let total = 0;
+  for (const ch of s) total += ctx.measureText(ch).width + sp;
+  return total - sp;
+}
+function tLine(x, y, s, a, size) {
+  Title.fitV = Math.max(Title.fitV, y);
+  /* Every body row records its own box. Two tabs' worth of rows are positioned
+     by hand-written offsets, so the failure mode is not "too wide" — it is two
+     rows landing on the same baseline, which is what putting a sixth key in a
+     five-key column did. verify_title compares these rather than a screenshot. */
+  const fs = size || 11.5;
+  Title.rows.push([x, y, txtWidth(s, fs, 400), fs]);
+  txt(s, x, y, fs, hexA(PAL.bone, a === undefined ? 0.78 : a), 'left', 400);
+}
+function tRule(x, y, w) { ctx.fillStyle = hexA(PAL.bone, 0.10); ctx.fillRect(x, y, w, 1); }
+
+/* --- TAB 1: how to play -------------------------------------------------------- */
+function tabHowToPlay(x, y, w, o) {
+  const half = w / 2 + 10;
+
+  tHead(x, y + 4, 'THE RUN');
+  const steps = [
+    ['1', 'Light the three beacons — stand inside a ring for ' +
+          CONFIG.FLOWER_HOLD_SECONDS.toFixed(1) + 's each.'],
+    ['2', 'Walk into the Boss Bloom’s cyan ring to force it open, then kill it.'],
+    ['3', 'Step through the portal its death leaves behind. That is the win.'],
+  ];
+  for (let i = 0; i < steps.length; i++) {
+    const ly = y + 28 + i * 21;
+    txtL(steps[i][0], x + 4, ly, 12, hexA(PAL.bloom, 0.75), 'left', 0);
+    tLine(x + 20, ly, steps[i][1], 0.82);
+  }
+
+  tRule(x, y + 98, w);
+
+  tHead(x, y + 122, 'THE WITHER — THE LAST ' + CONFIG.DUSK_WINDOW_SECONDS + ' SECONDS', PAL.blood);
+  tLine(x, y + 146, 'Unbloomed ground burns you for up to ' + CONFIG.DUSK_DPS + '/sec. Ground you lit is safe.', 0.82);
+  tLine(x, y + 168, 'Dash bloom-to-bloom to chain: recharge, speed, marks, then FULL BLOOM.', 0.82);
+  tLine(x, y + 190, 'Any time: dash THROUGH an enemy shot to plant it. It grows into what you have lit.',
+        0.62, 10.5);
+
+  tRule(x, y + 200, w);
+
+  tHead(x, y + 224, 'CONTROLS');
+  const keys = [
+    ['WASD', 'move'],
+    ['MOUSE', o.aimWord || 'aim'],
+    ['HOLD LEFT CLICK', 'fire — the gun never shoots on its own'],
+    ['SPACE', 'dash — ' + CONFIG.DASH_DISTANCE.toFixed(1) + ' tiles, ' +
+              CONFIG.DASH_COOLDOWN.toFixed(1) + 's cooldown'],
+    ['E', 'open a seed cache you can afford'],
+  ];
+  const keys2 = [
+    ['ESC', 'pause menu — resume, restart, main menu'],
+    ['R', 'start a new run'],
+    ['M', 'mute'],
+  ];
+  if (o.cameraKey) keys2.unshift(['C', 'swap camera']);
+  const row = (list, cx, colw) => {
+    for (let i = 0; i < list.length; i++) {
+      const ly = y + 248 + i * 20;
+      txtL(list[i][0], cx + 104, ly, 9.5, hexA(PAL.bloom, 0.8), 'right', 1.6);
+      tLine(cx + 114, ly, list[i][1], 0.55, 11);
+    }
+  };
+  row(keys, x, half);
+  row(keys2, x + half - 40, half);
+
+  tLine(x, y + 348, 'You are faster than every enemy in the game — you can always walk away from a fight.',
+        0.40, 10.5);
+}
+
+/* --- TAB 2: beacons ------------------------------------------------------------- */
+function tabBeacons(x, y, w) {
+  tStrip(x, y + 8, w, [
+    CONFIG.FLOWER_COUNT + ' ON THE MAP',
+    'HOLD ' + CONFIG.FLOWER_HOLD_SECONDS.toFixed(1) + 's',
+    'OUT BLEEDS ' + Math.round(CONFIG.FLOWER_DECAY_PER_SEC * 100) + '%/s',
+    'LIGHTS ' + CONFIG.FLOWER_BLOOM_RADIUS.toFixed(0) + ' TILES',
+    '+1 BOSS PETAL EACH',
+  ]);
+
+  const order = ['econ', 'heal', 'buff'];
+  for (let i = 0; i < order.length; i++) {
+    const T = FLOWER_TYPES[order[i]];
+    const ly = y + 62 + i * 102;
+    flowerGlyph(x + 26, ly + 14, 19, T.petal, true, 1);
+    const nameW = txtL(T.name, x + 60, ly + 4, 14, T.petal, 'left', 3);
+    txtL('·  ' + T.effect, x + 70 + nameW, ly + 4, 9, hexA(T.petal, 0.55), 'left', 2);
+    txt(T.tag, x + 60, ly + 22, 10.5, hexA(PAL.bone, 0.48), 'left', 400);
+    const lines = flowerLines(order[i]);
+    for (let j = 0; j < lines.length; j++) {
+      txt('·  ' + lines[j], x + 60, ly + 42 + j * 16, 11.5, hexA(PAL.bone, 0.88), 'left', 600);
+    }
+    /* every beacon is also a cost — say so here, not just mid-run */
+    txt('grows the boss a ' + PETALS[order[i]].name + ': ' + PETALS[order[i]].does,
+        x + 60, ly + 42 + lines.length * 16 + 2, 10, hexA(PAL.accent, 0.75), 'left', 500);
+    if (i < order.length - 1) tRule(x, ly + 76, w);
+  }
+}
+
+/* --- TAB 3: caches --------------------------------------------------------------- */
+function tabCaches(x, y, w) {
+  tStrip(x, y + 8, w, [
+    CONFIG.CHEST_COUNT + ' ON THE MAP',
+    CONFIG.CHEST_COST + ' SILVER',
+    '+' + CONFIG.CHEST_COST_ESCALATION + ' PER CACHE OPENED',
+    'NO DUPLICATES — ONE OF THESE ' + ITEM_POOL.length,
+  ]);
+
+  const colw = w / 2;
+  for (let i = 0; i < ITEM_POOL.length; i++) {
+    const it = ITEM_POOL[i];
+    const col = i % 2, rowi = (i / 2) | 0;
+    const ix = x + col * colw + 22;
+    const iy = y + 76 + rowi * 92;
+    ctx.fillStyle = 'rgba(13,11,22,0.55)';
+    ctx.beginPath(); ctx.arc(ix, iy, 17, 0, TAU); ctx.fill();
+    ctx.strokeStyle = hexA(PAL.bloom, 0.28); ctx.lineWidth = 1; ctx.stroke();
+    itemIcon(it.id, ix, iy, 20, PAL.bloom);
+    txtL(it.name, ix + 30, iy - 6, 11.5, PAL.bone, 'left', 2.2);
+    txtL(it.stat, ix + 30, iy + 10, 9.5, hexA(PAL.bloom, 0.9), 'left', 1.6);
+    txt(it.desc, ix + 30, iy + 26, 10, hexA(PAL.bone, 0.45), 'left', 400);
+  }
+}
+
+/* --- TAB 4: enemies ---------------------------------------------------------------- */
+function tabEnemies(x, y, w) {
+  tStrip(x, y + 8, w, [
+    'THEY ARRIVE IN WAVES',
+    'EACH KIND UNLOCKS ON A CLOCK',
+    'NONE OUTRUN YOUR ' + CONFIG.PLAYER_SPEED.toFixed(1) + ' TILES/sec',
+  ]);
+
+  const list = [
+    { n: 'RUSHER',  c: '#A63450', hp: CONFIG.RUSHER_HP, sp: CONFIG.RUSHER_SPEED, dm: CONFIG.RUSHER_DAMAGE,
+      when: 'from 0:00',
+      d: 'Closes on you, plants for a visible beat, then lunges. That wind-up is your cue to move.' },
+    { n: 'SPITTER', c: '#553A52', hp: CONFIG.SPITTER_HP, sp: CONFIG.SPITTER_SPEED, dm: CONFIG.SPITTER_SHOT_DAMAGE,
+      when: 'from ' + CONFIG.SPITTER_UNLOCK_AT.toFixed(0) + 's',
+      d: 'Holds ' + CONFIG.SPITTER_KEEP_DIST.toFixed(0) + ' tiles back and shoots whenever it has line of sight. Break the line with a ruin.' },
+    { n: 'MITE',    c: '#8E3149', hp: CONFIG.MITE_HP, sp: CONFIG.MITE_SPEED, dm: CONFIG.MITE_DAMAGE,
+      when: 'from ' + CONFIG.MITE_UNLOCK_AT.toFixed(0) + 's',
+      d: 'Arrives in threes. Circles at arm’s length, darts in for one hit, peels away. Fragile.' },
+  ];
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    const ly = y + 62 + i * 76;
+    /* each one drawn as its own silhouette — three identical triangles would
+       teach the player nothing about telling them apart on the field */
+    enemyMark(x + 20, ly + 2, e.n, e.c);
+    txtL(e.n, x + 46, ly + 2, 12.5, PAL.bone, 'left', 2.6);
+    txtL(e.when, x + 46, ly + 18, 8.5, hexA(PAL.bone, 0.35), 'left', 1.6);
+    txtL(e.hp + ' HP   ·   ' + e.sp.toFixed(1) + ' SPD   ·   ' + e.dm + ' DMG',
+         x + w, ly + 2, 9.5, hexA(PAL.blood, 0.75), 'right', 1.6);
+    txt(e.d, x + 46, ly + 36, 10.5, hexA(PAL.bone, 0.55), 'left', 400);
+    if (i < list.length - 1) tRule(x, ly + 50, w);
+  }
+
+  tRule(x, y + 296, w);
+  bossGlyph(x + 22, y + 322, 15);
+  txtL('THE BOSS BLOOM', x + 48, y + 318, 12.5, PAL.accent, 'left', 2.6);
+  txtL(CONFIG.BOSS_HP + ' HP', x + w, y + 318, 9.5, hexA(PAL.accent, 0.75), 'right', 1.6);
+  txt('Awake from the first second and reachable from turn one — but it does not chase you. Petal barrage, a',
+      x + 48, y + 338, 10.5, hexA(PAL.bone, 0.55), 'left', 400);
+  txt('rotating light-lash, and it spits mites. Under ' + Math.round(CONFIG.BOSS_ENRAGE_AT * 100) +
+      '% health it enrages. Going in cold is how you lose.',
+      x + 48, y + 354, 10.5, hexA(PAL.bone, 0.55), 'left', 400);
+}
+
+/* The Boss Bloom's mark: the thing itself in miniature — two petal rings around
+   a hot core, not the flat cyan dot this used to be. */
+function bossGlyph(cx, cy, s) {
+  ctx.save(); ctx.translate(cx, cy);
+  /* the halo it carries in the world */
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, s * 1.9);
+  g.addColorStop(0, hexA(PAL.accent, 0.34));
+  g.addColorStop(1, hexA(PAL.accent, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(-s * 1.9, -s * 1.9, s * 3.8, s * 3.8);
+  ctx.globalCompositeOperation = 'source-over';
+
+  /* outer ring — nine petals, the count the boss actually has */
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * TAU;
+    ctx.save(); ctx.rotate(a);
+    ctx.fillStyle = rgbaStr(mixRgb(hexToRgb('#2A2246'), RGB.accent, 0.55), 1);
+    ctx.beginPath();
+    ctx.ellipse(s * 0.62, 0, s * 0.46, s * 0.17, 0, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = hexA(PAL.accent, 0.45); ctx.lineWidth = 0.8; ctx.stroke();
+    ctx.restore();
+  }
+  /* inner ring, offset so the two do not line up */
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU + 0.4;
+    ctx.save(); ctx.rotate(a);
+    ctx.fillStyle = rgbaStr(mixRgb(hexToRgb('#3A2E58'), RGB.accent, 0.7), 1);
+    ctx.beginPath();
+    ctx.ellipse(s * 0.33, 0, s * 0.27, s * 0.13, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.fillStyle = PAL.accent;
+  ctx.beginPath(); ctx.arc(0, 0, s * 0.24, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#EAFFFF';
+  ctx.beginPath(); ctx.arc(0, 0, s * 0.11, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+/* ---------------------------------------------------------------------------
+   TAB 5: stats
+
+   What every stat on the HUD means, what it starts at, and everything in the
+   run that moves it. The item effects are not typed out here — each item's real
+   apply() is RUN against a blank stat block and the difference is read back, so
+   this tab reports what the items actually do rather than what a comment says
+   they do. Retune an item and this tab retunes with it.
+   --------------------------------------------------------------------------- */
+function itemDeltas(field) {
+  const out = [];
+  for (const it of ITEM_POOL) {
+    const base = { dmgMult: 1, rateMult: 1, speedMult: 1, pierce: CONFIG.BOLT_PIERCE,
+                   maxHp: CONFIG.PLAYER_MAX_HP };
+    const t = Object.assign({}, base);
+    it.apply(t);
+    let d = '';
+    if (field === 'hp') {
+      const dm = t.maxHp - base.maxHp;
+      /* an item that raises max AND heals the same amount is one number, not two */
+      if (dm && it.heal === dm) d = '+' + dm + ' and fills';
+      else if (dm && it.heal)   d = '+' + dm + ' max, +' + it.heal + ' now';
+      else if (dm)              d = '+' + dm + ' max';
+      else if (it.heal)         d = '+' + it.heal + ' now';
+    } else if (field === 'pierce') {
+      const dp = t.pierce - base.pierce;
+      if (dp) d = '+' + dp;
+    } else {
+      const m = t[field] / base[field];
+      if (Math.abs(m - 1) > 1e-6) d = '×' + m.toFixed(2);
+    }
+    if (d) out.push(it.name + ' ' + d);
+  }
+  return out;
+}
+
+function tabStats(x, y, w) {
+  tStrip(x, y + 8, w, [
+    'THESE ARE THE HUD NUMBERS',
+    'BEACONS AND CACHES BOTH STACK',
+    'ITEMS LAST THE WHOLE RUN',
+  ]);
+
+  const F = FLOWER_TYPES;
+  const rate = 1 / CONFIG.BOLT_COOLDOWN;
+  const rows = [
+    { n: 'VITALITY', v: String(CONFIG.PLAYER_MAX_HP),
+      note: 'your health. at zero the run ends.',
+      beacon: F.heal.name + ' +' + CONFIG.HEAL_INSTANT + ' on open, then +' +
+              CONFIG.HEAL_REGEN_PER_SEC.toFixed(1) + '/sec',
+      bc: F.heal.petal, items: itemDeltas('hp') },
+    { n: 'BOLT DAMAGE', v: String(CONFIG.BOLT_DAMAGE),
+      note: 'per bolt that connects.',
+      beacon: F.buff.name + ' ×' + CONFIG.BUFF_DAMAGE_MULT.toFixed(2),
+      bc: F.buff.petal, items: itemDeltas('dmgMult') },
+    { n: 'FIRE RATE', v: rate.toFixed(1) + '/sec',
+      note: 'while the button is held.',
+      beacon: F.buff.name + ' ×' + CONFIG.BUFF_FIRERATE_MULT.toFixed(2),
+      bc: F.buff.petal, items: itemDeltas('rateMult') },
+    { n: 'MOVE SPEED', v: CONFIG.PLAYER_SPEED.toFixed(1) + ' tiles/s',
+      note: 'faster than every enemy in the game.',
+      beacon: '', bc: null, items: itemDeltas('speedMult') },
+    { n: 'PIERCE', v: String(CONFIG.BOLT_PIERCE),
+      note: 'extra enemies each bolt passes through.',
+      beacon: '', bc: null, items: itemDeltas('pierce') },
+    { n: 'SILVER', v: 'from kills',
+      note: 'the only currency. it buys caches.',
+      beacon: F.econ.name + ' +' + CONFIG.ECON_PASSIVE_PER_SEC.toFixed(1) + '/sec, drops ×' +
+              CONFIG.ECON_DROP_MULT.toFixed(1),
+      bc: F.econ.petal, items: [] },
+  ];
+
+  const vx = x + 156;          // where the base value column sits
+  const sx = x + 268;          // where the "raised by" column starts
+  txtL('STAT', x, y + 34, 8, hexA(PAL.bone, 0.30), 'left', 1.6);
+  txtL('BASE', vx, y + 34, 8, hexA(PAL.bone, 0.30), 'left', 1.6);
+  txtL('RAISED BY', sx, y + 34, 8, hexA(PAL.bone, 0.30), 'left', 1.6);
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const ly = y + 58 + i * 48;
+    txtL(r.n, x, ly, 10.5, PAL.bone, 'left', 1.8);
+    txt(r.note, x, ly + 15, 9, hexA(PAL.bone, 0.34), 'left', 400);
+    txtL(r.v, vx, ly, 11, PAL.bloom, 'left', 1.4);
+    if (r.beacon) txt(r.beacon, sx, ly, 10, hexA(r.bc, 0.92), 'left', 600);
+    const its = r.items.join('   ·   ');
+    txt(its || (r.beacon ? '' : 'nothing in the run changes it'),
+        sx, ly + (r.beacon ? 15 : 2), 9.5, hexA(PAL.bone, its ? 0.62 : 0.30), 'left', 400);
+    if (i < rows.length - 1) tRule(x, ly + 28, w);
+  }
+
+  /* the two that nothing moves, tucked on one line so the tab is complete */
+  tRule(x, y + 58 + rows.length * 48 - 20, w);
+  const foot = 'BOLT RANGE  ' + (CONFIG.BOLT_SPEED * CONFIG.BOLT_LIFE).toFixed(0) + ' tiles' +
+               '     ·     MERCY AFTER A HIT  ' + CONFIG.PLAYER_IFRAMES.toFixed(2) + 's' +
+               '     ·     NEITHER CHANGES ALL RUN';
+  let fs = 8.5;
+  while (fs > 6.2 && txtLWidth(foot, fs, 1.8) > w) fs -= 0.25;
+  Title.fit = Math.max(Title.fit, txtLWidth(foot, fs, 1.8) / w);
+  txtL(foot, x + w / 2, y + 58 + rows.length * 48, fs, hexA(PAL.bone, 0.36), 'center', 1.8);
+}
+
+/* the three enemy silhouettes, matching what you actually see on the plateau */
+function enemyMark(cx, cy, kind, col) {
+  ctx.save(); ctx.translate(cx, cy);
+  ctx.fillStyle = col;
+  if (kind === 'RUSHER') {
+    /* a spiked cone — broad, with thorns */
+    ctx.beginPath();
+    ctx.moveTo(0, -13); ctx.lineTo(9, 3); ctx.lineTo(4, 9);
+    ctx.lineTo(-4, 9); ctx.lineTo(-9, 3);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = hexA(PAL.blood, 0.9); ctx.lineWidth = 1.8;
+    for (let i = -1; i <= 1; i += 2) {
+      ctx.beginPath();
+      ctx.moveTo(i * 5, -3); ctx.lineTo(i * 12, -9);
+      ctx.stroke();
+    }
+  } else if (kind === 'SPITTER') {
+    /* a pod on a stalk, with its mouth */
+    ctx.strokeStyle = col; ctx.lineWidth = 2.6;
+    ctx.beginPath(); ctx.moveTo(0, 11); ctx.lineTo(0, 2); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(0, -4, 7, 8.5, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = hexA(PAL.blood, 0.9);
+    ctx.beginPath(); ctx.ellipse(0, -3, 2.6, 3.2, 0, 0, TAU); ctx.fill();
+  } else {
+    /* a small dart — noticeably smaller than the other two, which is the point */
+    ctx.beginPath();
+    ctx.moveTo(0, -8); ctx.lineTo(6, 5); ctx.lineTo(-6, 5);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* the 2D build's entry point: painted backdrop, then the shared screen */
+function drawTitle() {
+  drawTitleBackdrop();
+  drawTitleScreen({ aimWord: 'aim' });
+}
+
+/* ============================================================================
+   THE LAST BLOOM — the banner and the chain meter
+
+   Both only exist during the wither, so the HUD outside the final seconds is
+   exactly what it was. The meter is five pips rather than a bar: the player
+   needs to know WHICH tier they are on, because each one grants a different
+   thing, and a continuous bar cannot say that.
+   ========================================================================== */
+function drawWitherBanner() {
+  if (!Game.witherBanner || Game.witherBanner <= 0) return;
+  /* the heartbeat: for the first beat there is deliberately nothing on screen */
+  const since = CONFIG.WITHER_BANNER_SECONDS + CONFIG.WITHER_HEARTBEAT - Game.witherBanner;
+  if (since < CONFIG.WITHER_HEARTBEAT) return;
+
+  const t = clamp(Game.witherBanner / CONFIG.WITHER_BANNER_SECONDS, 0, 1);
+  const a = Math.min(1, clamp((1 - t) * 8, 0, 1), clamp(t * 3, 0, 1));
+  ctx.save();
+  ctx.globalAlpha = a;
+  /* two bands rather than a full wash, so the plateau stays visible behind it —
+     the point of the moment is watching the ground change */
+  const bh = 74;
+  ctx.fillStyle = 'rgba(13,11,22,0.80)';
+  ctx.fillRect(0, VH * 0.36 - bh / 2, VW, bh);
+  ctx.fillStyle = hexA(PAL.blood, 0.55);
+  ctx.fillRect(0, VH * 0.36 - bh / 2, VW, 1);
+  ctx.fillRect(0, VH * 0.36 + bh / 2, VW, 1);
+  txtL('THE WITHER HAS BEGUN', VW / 2, VH * 0.36 + 2, 30, PAL.blood, 'center', 10);
+  txtL('WHAT YOU GREW IS THE ONLY ROAD OUT', VW / 2, VH * 0.36 + 24, 10,
+       hexA(PAL.bone, 0.55), 'center', 3);
+  ctx.restore();
+}
+
+function drawChainMeter() {
+  if (!Game.dusk) return;
+  const p = Player;
+  const full = p.fullBloom > 0;
+  const cx = VW / 2, y = VH - 118;
+
+  /* the five pips */
+  const n = CONFIG.CHAIN_MAX, pw = 34, gap = 7;
+  const total = n * pw + (n - 1) * gap;
+  let x = cx - total / 2;
+  for (let i = 0; i < n; i++) {
+    const on = full || p.tier > i;
+    ctx.fillStyle = on ? hexA(PAL.bloom, full ? 0.95 : 0.8) : 'rgba(13,11,22,0.7)';
+    ctx.fillRect(x, y, pw, 5);
+    ctx.strokeStyle = hexA(on ? PAL.bloom : PAL.bone, on ? 0.7 : 0.16);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, pw - 1, 4);
+    x += pw + gap;
+  }
+
+  /* the window you have left to land the next link, drained under the pips */
+  if (p.tier > 0 && !full) {
+    const w = total * clamp(p.chainT / CONFIG.CHAIN_WINDOW, 0, 1);
+    ctx.fillStyle = hexA(PAL.bone, 0.28);
+    ctx.fillRect(cx - total / 2, y + 8, w, 2);
+  }
+
+  if (full) {
+    const pulse = 0.75 + Math.sin(performance.now() / 70) * 0.25;
+    txtL('FULL BLOOM', cx, y - 10, 15, hexA(PAL.bloom, pulse), 'center', 6);
+    txtL(p.fullBloom.toFixed(1) + 's', cx, y + 24, 9, hexA(PAL.bloom, 0.6), 'center', 2);
+  } else if (p.tier > 0) {
+    txtL(chainTierName(p.tier), cx, y - 10, 12, PAL.bloom, 'center', 4);
+    txtL('DASH BLOOM TO BLOOM', cx, y + 24, 8, hexA(PAL.bone, 0.32), 'center', 2);
+  } else {
+    txtL('DASH BLOOM TO BLOOM TO CHAIN', cx, y - 10, 10, hexA(PAL.bone, 0.40), 'center', 2.6);
+  }
+}
+
+/* ============================================================================
+   PAUSE MENU — shared by both builds
+
+   Escape used to put up a card that said "click to go on" and nothing else: if
+   you wanted out of a bad run you had to already know that R restarts. This is
+   a real menu with the three things a paused player actually wants, driven by
+   mouse OR keyboard, and laid out in the same virtual box as the title screen
+   so it scales the same way.
+
+   The BUILD supplies what the choices DO (pauseAction), because "main menu"
+   means a different call in each one.
+   ========================================================================== */
+const PAUSE_ITEMS = [
+  { id: 'resume',  label: 'RESUME',       note: 'back into the run' },
+  { id: 'restart', label: 'RESTART RUN',  note: 'a new seed, the clock back to ' + CONFIG.LIGHT_SECONDS },
+  { id: 'title',   label: 'MAIN MENU',    note: 'the title screen and its reference tabs' },
+];
+
+const Pause = {
+  idx: 0,
+  rects: [],                 // virtual-space boxes, rebuilt every draw
+  mx: -9999, my: -9999,      // cursor in VIRTUAL space
+  hot: -1,
+  scale: 1, ox: 0, oy: 0,
+  boxW: 940, boxH: 476,
+};
+
+function pauseToVirtual(sx, sy) {
+  return [(sx - Pause.ox) / Pause.scale, (sy - Pause.oy) / Pause.scale];
+}
+function pauseHover(sx, sy) {
+  const v = pauseToVirtual(sx, sy);
+  Pause.mx = v[0]; Pause.my = v[1];
+  for (let i = 0; i < Pause.rects.length; i++) {
+    const r = Pause.rects[i];
+    if (v[0] >= r[0] && v[0] <= r[0] + r[2] && v[1] >= r[1] && v[1] <= r[1] + r[3]) {
+      Pause.idx = i; return;
+    }
+  }
+}
+/* returns the chosen id, or null if the click missed every item */
+function pauseClick(sx, sy) {
+  const v = pauseToVirtual(sx, sy);
+  for (let i = 0; i < Pause.rects.length; i++) {
+    const r = Pause.rects[i];
+    if (v[0] >= r[0] && v[0] <= r[0] + r[2] && v[1] >= r[1] && v[1] <= r[1] + r[3]) {
+      Pause.idx = i; Audio_.pickup();
+      return PAUSE_ITEMS[i].id;
+    }
+  }
+  return null;
+}
+/* arrows / WS move, Enter or Space confirms, Escape resumes. Returns an id or null. */
+function pauseKey(k) {
+  const n = PAUSE_ITEMS.length;
+  if (k === 'arrowdown' || k === 's') { Pause.idx = (Pause.idx + 1) % n; Audio_.pickup(); return null; }
+  if (k === 'arrowup'   || k === 'w') { Pause.idx = (Pause.idx + n - 1) % n; Audio_.pickup(); return null; }
+  if (k === 'enter' || k === ' ')     { Audio_.pickup(); return PAUSE_ITEMS[Pause.idx].id; }
+  if (k >= '1' && k <= String(n))     { Pause.idx = +k - 1; Audio_.pickup(); return PAUSE_ITEMS[Pause.idx].id; }
+  return null;
+}
+
+function drawPauseMenu() {
+  const t = performance.now() / 1000;
+  ctx.fillStyle = 'rgba(13,11,22,0.88)';
+  ctx.fillRect(0, 0, VW, VH);
+
+  const BW = Pause.boxW, BH = Pause.boxH;
+  const S = clamp(Math.min(VW / (BW + 60), VH / (BH + 50)), 0.46, 1.10);
+  Pause.scale = S; Pause.ox = VW / 2; Pause.oy = VH / 2;
+
+  ctx.save();
+  ctx.translate(VW / 2, VH / 2);
+  ctx.scale(S, S);
+
+  const top = -BH / 2;
+  drawTitleFlower(0, top + 26, 20, t);
+  txtL('PAUSED', 0, top + 68, 22, PAL.bone, 'center', 8);
+
+  /* the run so far, right under the title — it is the context for the choice */
+  txtL(Math.round(bloomPercent() * 100) + '% BLOOM   ·   ' +
+       litCount() + '/' + flowers.length + ' BEACONS   ·   ' +
+       Math.max(0, Game.timeLeft).toFixed(1) + 's LEFT',
+       0, top + 86, 9, hexA(PAL.bloom, 0.5), 'center', 2.2);
+
+  /* ---- left: the three choices ---- */
+  const colL = -BW / 2 + 24, iw = 254, ih = 44, gap = 9;
+  const itemTop = top + 112;
+  Pause.rects.length = 0;
+  for (let i = 0; i < PAUSE_ITEMS.length; i++) {
+    const it = PAUSE_ITEMS[i];
+    const ix = colL, iy = itemTop + i * (ih + gap);
+    Pause.rects.push([ix, iy, iw, ih]);
+    const on = Pause.idx === i;
+    ctx.fillStyle = on ? 'rgba(139,232,161,0.10)' : 'rgba(13,11,22,0.55)';
+    ctx.fillRect(ix, iy, iw, ih);
+    ctx.strokeStyle = on ? hexA(PAL.bloom, 0.60) : hexA(PAL.bone, 0.14);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(ix + 0.5, iy + 0.5, iw - 1, ih - 1);
+    if (on) { ctx.fillStyle = hexA(PAL.bloom, 0.65); ctx.fillRect(ix, iy, 3, ih); }
+    txtL(it.label, ix + 18, iy + 20, 12.5, on ? PAL.bloom : hexA(PAL.bone, 0.72), 'left', 2.6);
+    txt(it.note, ix + 18, iy + 34, 9, hexA(PAL.bone, on ? 0.48 : 0.28), 'left', 400);
+    txtL(String(i + 1), ix + iw - 14, iy + 20, 9, hexA(PAL.bone, on ? 0.45 : 0.22), 'right', 1.4);
+  }
+
+  /* controls, under the choices */
+  const ctlY = itemTop + PAUSE_ITEMS.length * (ih + gap) + 14;
+  pHead(colL, ctlY, 'CONTROLS');
+  const keys = [
     ['WASD', 'move'],
     ['MOUSE', 'aim'],
-    ['HOLD LEFT CLICK', 'fire — the gun does nothing on its own'],
-    ['E', 'open a seed cache'],
-    ['HOLD A BEACON', 'stand inside the ring until it opens'],
-    ['THE BOSS BLOOM', 'awake from the first second. it does not wait.'],
+    ['HOLD CLICK', 'fire — never automatic'],
+    ['SPACE', 'dash · ' + CONFIG.DASH_DISTANCE.toFixed(1) + ' tiles / ' +
+              CONFIG.DASH_COOLDOWN.toFixed(1) + 's'],
+    ['E', 'open a cache you can afford'],
+    ['ESC', 'this menu'],
+    ['R / M', 'new run / mute'],
   ];
-  const ly = VH * 0.63;
-  for (let i = 0; i < lines.length; i++) {
-    const y = ly + i * 24;
-    txtL(lines[i][0], VW / 2 - 18, y, 11, hexA(PAL.bloom, 0.8), 'right', 2);
-    txt(lines[i][1], VW / 2 + 18, y, 13, hexA(PAL.bone, 0.6), 'left', 400);
+  for (let i = 0; i < keys.length; i++) {
+    const ky = ctlY + 18 + i * 15;
+    txtL(keys[i][0], colL + 78, ky, 8.5, hexA(PAL.bloom, 0.72), 'right', 1.4);
+    txt(keys[i][1], colL + 86, ky, 9.5, hexA(PAL.bone, 0.5), 'left', 400);
   }
-  const blink = 0.55 + Math.sin(t * 3.2) * 0.45;
-  txtL('PRESS  SPACE', VW / 2, VH - 62, 15, hexA(PAL.bone, blink), 'center', 5);
-  txtL('R RESTART   ·   M MUTE   ·   ?seed=NUMBER TO REPLAY A RUN',
-    VW / 2, VH - 30, 9, hexA(PAL.bone, 0.22), 'center', 2);
+
+  /* ---- right: what everything in the game actually does ---- */
+  const colR = colL + iw + 30, rw = BW - iw - 78;
+  let ry = top + 112;
+
+  pHead(colR, ry, 'THE RUN');
+  ry += 16;
+  pLine(colR, ry, 'Light 3 beacons — stand in a ring ' + CONFIG.FLOWER_HOLD_SECONDS.toFixed(1) +
+        's. Step out and it bleeds ' + Math.round(CONFIG.FLOWER_DECAY_PER_SEC * 100) + '%/s.'); ry += 13;
+  pLine(colR, ry, 'Walk into the Boss Bloom ring to force it open, kill it,'); ry += 13;
+  pLine(colR, ry, 'leave through its portal. All inside ' + CONFIG.LIGHT_SECONDS + 's.'); ry += 20;
+
+  pHead(colR, ry, 'BEACONS  —  each lights ' + CONFIG.FLOWER_BLOOM_RADIUS.toFixed(0) +
+        ' tiles and grows the boss a petal');
+  ry += 16;
+  const bl = [
+    [FLOWER_TYPES.econ, '+' + CONFIG.ECON_PASSIVE_PER_SEC.toFixed(1) + ' silver/s, +' +
+      Math.round((CONFIG.ECON_DROP_MULT - 1) * 100) + '% drops', 'boss erupts the ground under you'],
+    [FLOWER_TYPES.heal, '+' + CONFIG.HEAL_INSTANT + ' now, then +' +
+      CONFIG.HEAL_REGEN_PER_SEC.toFixed(1) + '/s', 'boss grows buds that heal it'],
+    [FLOWER_TYPES.buff, '+' + Math.round((CONFIG.BUFF_DAMAGE_MULT - 1) * 100) + '% damage, +' +
+      Math.round((CONFIG.BUFF_FIRERATE_MULT - 1) * 100) + '% fire rate', 'boss swings a second lash'],
+  ];
+  for (const [T, good, cost] of bl) {
+    txtL(T.name, colR, ry, 9.5, hexA(T.petal, 0.95), 'left', 1.6);
+    txt(good, colR + 98, ry, 9.5, hexA(PAL.bone, 0.62), 'left', 400);
+    txt(cost, colR + 98, ry + 11, 8.5, hexA(PAL.accent, 0.55), 'left', 400);
+    ry += 25;
+  }
+  ry += 2;
+
+  pHead(colR, ry, 'DASH THROUGH AN ENEMY SHOT AND YOU PLANT IT');
+  ry += 16;
+  const pl = [
+    ['nothing lit', PLANT_KINDS.sprout.name, 'blooms ' + CONFIG.PLANT_SPROUT_RADIUS.toFixed(0) + ' tiles of ground'],
+    [FLOWER_TYPES.econ.name, PLANT_KINDS.moon.name, CONFIG.PLANT_MOON_SHOTS + ' shots every ' +
+      CONFIG.PLANT_MOON_INTERVAL.toFixed(1) + 's'],
+    [FLOWER_TYPES.heal.name, PLANT_KINDS.balm.name, '+' + CONFIG.PLANT_BALM_HEAL + ' once, then spent'],
+    [FLOWER_TYPES.buff.name, PLANT_KINDS.thorn.name, CONFIG.PLANT_THORN_DAMAGE + ' damage every ' +
+      CONFIG.PLANT_THORN_INTERVAL.toFixed(2) + 's'],
+  ];
+  for (const [when, name, does] of pl) {
+    txtL(when, colR + 74, ry, 8.5, hexA(PAL.bone, 0.38), 'right', 1.2);
+    txtL(name, colR + 82, ry, 9, hexA(PAL.bloom, 0.9), 'left', 1.4);
+    txt(does, colR + 200, ry, 9, hexA(PAL.bone, 0.55), 'left', 400);
+    ry += 13;
+  }
+  pLine(colR, ry + 3, 'Several lit and it does all of them. Lasts ' +
+        CONFIG.PLANT_LIFETIME.toFixed(0) + 's, ' + CONFIG.PLANT_MAX + ' at once.', 0.42);
+  ry += 24;
+
+  pHead(colR, ry, 'THE WITHER  —  THE LAST ' + CONFIG.DUSK_WINDOW_SECONDS + ' SECONDS', PAL.blood);
+  ry += 16;
+  pLine(colR, ry, 'Unlit ground burns you up to ' + CONFIG.DUSK_DPS +
+        '/s. Ground you lit is safe.'); ry += 13;
+  pLine(colR, ry, 'Dash bloom-to-bloom to chain — leave the bloom and it breaks:'); ry += 14;
+  const tiers = ['2 faster recharge', '3 move faster',
+                 '4 enemies you pass are marked', CONFIG.CHAIN_MAX + ' FULL BLOOM'];
+  txtL(tiers.join('   ·   '), colR + 8, ry, 8.5, hexA(PAL.bloom, 0.7), 'left', 1.2);
+
+  /* ---- footer ---- */
+  txtL('ARROWS / 1-' + PAUSE_ITEMS.length + ' · ENTER PICKS · ESC RESUMES',
+       0, BH / 2 - 14, 8.5, hexA(PAL.bone, 0.32), 'center', 2);
+
+  ctx.restore();
 }
+
+/* small typographic helpers, local to the pause reference */
+function pHead(x, y, s, col) { txtL(s, x, y, 8.5, hexA(col || PAL.bloom, 0.85), 'left', 1.8); }
+function pLine(x, y, s, a) { txt(s, x, y, 9.5, hexA(PAL.bone, a === undefined ? 0.6 : a), 'left', 400); }
 
 function drawEndScreen() {
   const won = Game.state === STATE.WIN;
@@ -3725,7 +5539,7 @@ function drawEndScreen() {
 
   /* run readout */
   const stats = [
-    ['GROUND RECLAIMED', Math.round(bloomPercent() * 100) + '% of ' + Math.round(World.ceiling * 100) + '% possible'],
+    ['BLOOM', Math.round(bloomPercent() * 100) + '%   ' + bloomBand(bloomPercent()).name],
     ['BEACONS OPENED', flowers.filter(f => f.bloomed).length + ' / ' + flowers.length],
     ['CACHES OPENED',  String(chestsOpened)],
     ['SILVER GATHERED', String(Player.totalSilver)],
@@ -3811,6 +5625,11 @@ function renderHud() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.clearRect(0, 0, VW, VH);
 
+  /* The title screen sits over a live, slowly orbiting plateau — so it dims the
+     scene rather than painting its own backdrop, and none of the in-game HUD
+     is drawn underneath it. */
+  if (Game.state === STATE.TITLE) { drawTitle3D(); return; }
+
   drawEnemyPips();
   drawWaypoints();
   drawBossBar();
@@ -3822,7 +5641,7 @@ function renderHud() {
   drawLegend();
   drawCamModeFlash();
   if (Game.state === STATE.WIN || Game.state === STATE.LOSE) drawEndScreen();
-  else if (Game.paused) drawPauseCard();
+  else if (Game.paused) drawPauseMenu();
   if (CONFIG.SHOW_DEBUG) drawDebug();
 }
 
@@ -3969,8 +5788,13 @@ function drawCrosshair() {
      the GDD's high-angle mode the cursor is free, so the reticle follows it. */
   let x = VW / 2, y = VH / 2;
   if (isHighAngle()) {
-    const s = projectToScreen(Cam3.aimX, 0.02, Cam3.aimZ);
-    if (s) { x = s[0]; y = s[1]; }
+    /* Draw it AT the cursor, not at the projection of the aim point. They agree
+       to a fraction of a pixel when the camera is still, but screen shake
+       rotates the rendered view and would drag the reticle off the cursor the
+       player is actually pointing with. */
+    const c = cursorCanvasPos();
+    x = c[0] * (VW / Math.max(1, c[2]));
+    y = c[1] * (VH / Math.max(1, c[3]));
   }
   const firing = Player.firing;
   const inner = firing ? 4 : 6, outer = firing ? 10 : 13;
@@ -3997,17 +5821,7 @@ function drawCamModeFlash() {
   txtL('[C] CAMERA', VW / 2, VH - 54, 8, hexA(PAL.bone, 0.35 * a), 'center', 2.2);
 }
 
-/* --- pause ------------------------------------------------------------------------ */
-function drawPauseCard() {
-  const t = performance.now() / 1000;
-  ctx.fillStyle = 'rgba(13,11,22,0.80)';
-  ctx.fillRect(0, 0, VW, VH);
-  drawTitleFlower(VW / 2, VH * 0.36, Math.min(VW, VH) * 0.075, t);
-  txtL('THE PLATEAU HOLDS ITS BREATH', VW / 2, VH * 0.52, 22, PAL.bone, 'center', 7);
-  const blink = 0.55 + Math.sin(t * 3) * 0.4;
-  txtL('CLICK OR PRESS ESC TO GO ON', VW / 2, VH * 0.52 + 34, 13, hexA(PAL.bone, blink), 'center', 4);
-  txtL('[R] START A NEW RUN   ·   [M] MUTE', VW / 2, VH * 0.52 + 60, 9, hexA(PAL.bone, 0.32), 'center', 2);
-}
+/* pause is drawPauseMenu(), shared with the isometric build — see p08_hud.js */
 
 /* --- the cache prompt ---------------------------------------------------------------
    In the isometric build this was a world-space label over the chest. Third
@@ -4082,9 +5896,10 @@ function drawLegend() {
     ['WASD', 'move'],
     ['MOUSE', isHighAngle() ? 'aim' : 'look'],
     ['HOLD CLICK', 'fire'],
+    ['SPACE', 'dash'],
     ['E', 'open a cache'],
     ['C', 'camera'],
-    ['ESC', 'pause'],
+    ['ESC', 'pause menu'],
   ];
   const x = VW - 26, y0 = VH - 229;
   for (let i = 0; i < lines.length; i++) {
@@ -4102,35 +5917,16 @@ function drawLegend() {
 /* --- title card ------------------------------------------------------------------
    A live 3D plateau is already turning behind this, so the card stays sparse:
    no painted skyline, just the mark and what the four inputs do. */
+/* --- title card ------------------------------------------------------------------
+   The same four-tab screen the isometric build uses, over a dimmed live scene. */
 function drawTitle3D() {
-  const t = performance.now() / 1000;
   const g = ctx.createLinearGradient(0, 0, 0, VH);
-  g.addColorStop(0, 'rgba(13,11,22,0.88)');
-  g.addColorStop(0.5, 'rgba(13,11,22,0.62)');
-  g.addColorStop(1, 'rgba(13,11,22,0.92)');
+  g.addColorStop(0, 'rgba(13,11,22,0.80)');
+  g.addColorStop(0.5, 'rgba(13,11,22,0.52)');
+  g.addColorStop(1, 'rgba(13,11,22,0.86)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, VW, VH);
-
-  drawTitleFlower(VW / 2, VH * 0.29, Math.min(VW, VH) * 0.095, t);
-  txtL('DUSKPETAL', VW / 2, VH * 0.29 + Math.min(VW, VH) * 0.175,
-       Math.min(52, VW * 0.072), PAL.bone, 'center', 12);
-  txtL('SIXTY SECONDS BEFORE THE LIGHT FADES', VW / 2,
-       VH * 0.29 + Math.min(VW, VH) * 0.175 + 26, 11, hexA(PAL.bloom, 0.55), 'center', 4);
-
-  const lines = [
-    ['WASD', 'move, relative to where you are looking'],
-    ['MOUSE', 'look'],
-    ['HOLD LEFT CLICK', 'fire — the gun does nothing on its own'],
-    ['E', 'open a seed cache you can afford'],
-    ['STAND IN A RING', 'hold a beacon until it opens'],
-    ['THE BOSS BLOOM', 'awake from the first second. it does not wait.'],
-  ];
-  const ly = VH * 0.60;
-  for (let i = 0; i < lines.length; i++) {
-    const y = ly + i * 23;
-    txtL(lines[i][0], VW / 2 - 18, y, 11, hexA(PAL.bloom, 0.8), 'right', 2);
-    txt(lines[i][1], VW / 2 + 18, y, 13, hexA(PAL.bone, 0.6), 'left', 400);
-  }
+  drawTitleScreen({ aimWord: 'look (aim, in high-angle)', cameraKey: true });
 }
 
 /* --- the boss wilt bar -----------------------------------------------------------
@@ -4233,7 +6029,46 @@ function startRun3D() {
   Cam3.x = Player.wx - Math.sin(Cam3.yaw) * CONFIG3D.CAM_DIST;
   Cam3.z = Player.wy - Math.cos(Cam3.yaw) * CONFIG3D.CAM_DIST;
   Cam3.y = CONFIG3D.PLAYER_EYE + CONFIG3D.CAM_HEIGHT;
+  /* the title screen borrowed the system cursor for its tabs — take it back */
+  if (lookCanvas) lookCanvas.style.cursor = 'none';
+  resetReticle(true);
   Audio_.init();
+}
+
+/* --- title camera --------------------------------------------------------------
+   The plateau is live behind the title screen, so it gets a slow orbit rather
+   than sitting frozen. It never touches Game state — this is set dressing. */
+let titleOrbit = 0;
+function updateTitleCamera3D(dt) {
+  titleOrbit += dt * 0.16;
+  Cam3.yaw = titleOrbit;
+  Cam3.pitch = -0.30;
+  const f = camForward(Cam3.yaw, Cam3.pitch);
+  const r = camRight(Cam3.yaw);
+  Cam3.fwd = f; Cam3.right = r;
+  Cam3.up = [r[1]*f[2] - r[2]*f[1], r[2]*f[0] - r[0]*f[2], r[0]*f[1] - r[1]*f[0]];
+  const D0 = 13;
+  Cam3.x = Player.wx - f[0] * D0;
+  Cam3.y = Math.max(1.2, CONFIG3D.PLAYER_EYE + 2.2 - f[1] * D0);
+  Cam3.z = Player.wy - f[2] * D0;
+  Cam3.dist = D0;
+  Cam3.aimX = Player.wx + f[0] * 8;
+  Cam3.aimZ = Player.wy + f[2] * 8;
+}
+
+/* Build the world without starting the clock — the title needs something to
+   stand in front of, and pressing SPACE then plays the run you were looking at. */
+function showTitle3D() {
+  generateRun(forcedSeed3 !== null ? forcedSeed3 : pickSeed3D());
+  chestsOpened = 0;
+  econAccum = 0;
+  Game.state = STATE.TITLE;
+  Game.paused = false;
+  /* the tabs are clicked, so the title always runs with a real cursor */
+  if (lookCanvas) lookCanvas.style.cursor = 'default';
+  buildGround();
+  titleOrbit = Math.atan2(Boss.wx - Player.wx, Boss.wy - Player.wy);
+  updateTitleCamera3D(0);
 }
 
 function frame3D(now) {
@@ -4251,7 +6086,16 @@ function frame3D(now) {
   if (hitstop > 0) { hitstop -= dt; dt *= 0.12; }
   updateShake(dt);
 
-  if (Game.state === STATE.PLAY && !Game.paused) {
+  /* A harness that steps updateGame() itself owns the simulation: this loop
+     must not also build an intent and advance the clock underneath it. The 2D
+     build gets this for free because it never ASSIGNS Game.intent — it only
+     reads it — whereas frame3D rebuilds it every frame from the mouse. */
+  if (Game.headless) { draw3D(); renderHud(); Look.clearFrame(); return; }
+
+  if (Game.state === STATE.TITLE) {
+    Game.intent = null;
+    updateTitleCamera3D(dt);
+  } else if (Game.state === STATE.PLAY && !Game.paused) {
     updateCamera3D(dt);
     buildIntent3D();
     updateGame(dt);
@@ -4270,9 +6114,14 @@ function frame3D(now) {
   Look.clearFrame();
 }
 
+/* the aspect the projection matrix is built with — see screenRayToGround */
+function renderAspect(fallbackW, fallbackH) {
+  if (glCv && glCv.width && glCv.height) return glCv.width / glCv.height;
+  return (fallbackW || 1) / Math.max(1, fallbackH || 1);
+}
+
 function draw3D() {
-  const aspect = glCv.width / Math.max(1, glCv.height);
-  m4perspective(Proj, camFov(), aspect, 0.1, CONFIG3D.FAR);
+  m4perspective(Proj, camFov(), renderAspect(), 0.1, CONFIG3D.FAR);
 
   /* Look along the camera's own forward axis. Screen centre is therefore the
      aim point, and shake is a small nudge of that axis rather than of a target
@@ -4338,11 +6187,12 @@ function boot3D() {
   window.addEventListener('resize', resize3D);
   resize3D();
 
-  /* Straight into the run — no title gate, no click-to-dismiss. The controls
-     appear as a corner legend that fades on its own while you are already
-     playing, and the first click quietly upgrades to pointer lock. */
+  /* Open on the title screen — a real menu with the rules on it, not the
+     click-to-dismiss popup that used to sit here. SPACE starts; the mouse is
+     for the tabs. Once you are in a run the controls still appear as a corner
+     legend that fades on its own. */
   RNG = makeRng(pickSeed3D());
-  startRun3D();
+  showTitle3D();
 
   requestAnimationFrame(frame3D);
 }
@@ -4361,7 +6211,23 @@ window.DUSKPETAL = {
   dist, flowerLit, recomputeStats,
   moveWithCollision, isSolid, circleHitsSolid,
   projectToScreen,
-  setCameraMode, isHighAngle, screenRayToGround, camFov,
+  setCameraMode, isHighAngle, screenRayToGround, camFov, renderAspect,
+  Title, titleClick, titleKey, titleHover,
+  Pause, PAUSE_ITEMS, pauseClick, pauseKey, pauseHover,
+  setPaused: setPaused3D, applyPause: applyPause3D,
+  plantSeed, paintBloom,
+  setHeadless(on) { Game.headless = !!on; },
+  /* harness helper: set one tile's bloom outright, for building a known runway */
+  paintBloomAt(x, y, v) {
+    const i = tIdx(Math.floor(x), Math.floor(y));
+    World.bloom[i] = v; World.target[i] = v;
+    recountBloom();
+    if (typeof Ground !== 'undefined' && Ground) Ground.dirty = true;
+  },
+  get planted() { return planted; },
+  get marks() { return marks; },
+  PLANT_KINDS, plantKindsNow, chainTierName,
+  showTitle: showTitle3D,
 };
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot3D);
